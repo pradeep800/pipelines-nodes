@@ -1,33 +1,19 @@
 #!/usr/bin/env python3
 """
-SQL Transformer - Custom Node Container
+SQL Transformer - Parquet Only
 
-Executes SQL transformations using DuckDB and exports results to MinIO.
-Follows the NodeContext contract - receives a single NODE_CONTEXT JSON.
+Executes SQL transformations using DuckDB on Parquet files.
+Reads Parquet from MinIO, runs SQL, writes Parquet back to MinIO.
 
 Environment Variables:
-  NODE_CONTEXT       - JSON object with structure:
-                       {
-                         "node": { "name": "my_transform", "slug": "sql-transformer" },
-                         "inputs": [
-                           { "nodeSlug": "csv-source", "nodeName": "orders", 
-                             "output": { "name": "output", "path": "s3://...", "format": "csv" } }
-                         ],
-                         "output": {
-                           "basePath": "s3://bucket/user/artifacts/flow/exec/nodeName",
-                           "files": [{ "name": "result", "format": "parquet" }]
-                         },
-                         "config": { "sql": "SELECT * FROM ...", ... }
-                       }
-
-Resource Environment Variables (always injected for all nodes):
-  S3_ENDPOINT        - MinIO endpoint (e.g., minio:9000)
-  S3_ACCESS_KEY      - S3 access key (STS temporary credential)
-  S3_SECRET_KEY      - S3 secret key (STS temporary credential)
-  S3_SESSION_TOKEN   - S3 session token (STS temporary credential)
-  S3_BUCKET          - MinIO bucket name (default: data-pipeline)
-  S3_USE_SSL         - Use SSL for S3 (default: false)
-  S3_REGION          - S3 region (default: us-east-1)
+  NODE_CONTEXT       - JSON object with node configuration
+  S3_ENDPOINT        - MinIO endpoint
+  S3_ACCESS_KEY      - S3 access key
+  S3_SECRET_KEY      - S3 secret key
+  S3_SESSION_TOKEN   - S3 session token (optional)
+  S3_BUCKET          - MinIO bucket name
+  S3_USE_SSL         - Use SSL for S3
+  S3_REGION          - S3 region
 """
 
 import os
@@ -47,11 +33,6 @@ def log_error(message: str):
 def sanitize_table_name(name: str) -> str:
     """Sanitize a string for use as a SQL table name."""
     return "".join(c if c.isalnum() or c == "_" else "_" for c in name)
-
-
-def get_extension(format: str) -> str:
-    """Get file extension for a format."""
-    return {"parquet": "parquet", "csv": "csv", "json": "json"}.get(format.lower(), "parquet")
 
 
 def parse_node_context() -> dict:
@@ -79,52 +60,24 @@ def get_s3_config() -> dict:
     }
 
 
-def validate_context(ctx: dict):
-    """Validate required fields in NodeContext."""
-    if not ctx.get("node", {}).get("name"):
-        raise ValueError("node.name is required in NODE_CONTEXT")
-    
-    config = ctx.get("config", {})
-    if not config.get("sql"):
-        raise ValueError("config.sql is required in NODE_CONTEXT")
-    
-    if not ctx.get("inputs"):
-        raise ValueError("At least one input is required in NODE_CONTEXT")
-    
-    if not ctx.get("output", {}).get("basePath"):
-        raise ValueError("output.basePath is required in NODE_CONTEXT")
-    
-    if not ctx.get("output", {}).get("files"):
-        raise ValueError("output.files is required in NODE_CONTEXT")
-
-
 def main():
     # Parse context
     ctx = parse_node_context()
     s3_config = get_s3_config()
     
-    # Extract context fields
     node = ctx["node"]
     inputs = ctx["inputs"]
     output = ctx["output"]
     config = ctx["config"]
     
     node_name = node["name"]
-    node_slug = node["slug"]
     sql_query = config["sql"]
     base_path = output["basePath"]
     output_files = output["files"]
     
-    log("=== SQL Transformer Node ===")
-    log(f"Node: {node_name} ({node_slug})")
+    log("=== SQL Transformer ===")
+    log(f"Node: {node_name}")
     log(f"Inputs: {len(inputs)}")
-    log(f"Outputs: {len(output_files)}")
-    
-    # Log inputs
-    for inp in inputs:
-        log(f"  Input: {inp['nodeName']} ({inp['nodeSlug']}) -> {inp['output']['format']}")
-    
-    validate_context(ctx)
     
     # Create in-memory DuckDB connection
     conn = duckdb.connect(":memory:")
@@ -135,11 +88,10 @@ def main():
         conn.load_extension("httpfs")
         
         # Configure S3
-        log("Configuring S3 connection...")
+        log("Configuring S3...")
         session_token_clause = ""
         if s3_config["session_token"]:
             session_token_clause = f",\n                SESSION_TOKEN '{s3_config['session_token']}'"
-            log("Using STS temporary credentials")
         
         create_secret_sql = f"""
             CREATE SECRET minio_secret (
@@ -153,97 +105,64 @@ def main():
             )
         """
         conn.execute(create_secret_sql)
-        log("S3 secret configured successfully")
         
-        # Load all inputs as tables
+        # Load all inputs as tables (Parquet only)
         log("Loading inputs...")
         for inp in inputs:
-            # Use nodeName as table name (sanitized)
             table_name = sanitize_table_name(inp["nodeName"])
             path = inp["output"]["path"]
-            format = inp["output"].get("format", "parquet").lower()
             
-            log(f"  Loading '{table_name}' from {inp['nodeName']} (format: {format})")
-            
-            # Determine read function based on format
-            if format == "csv":
-                read_func = "read_csv_auto"
-            elif format == "json":
-                read_func = "read_json_auto"
-            else:
-                read_func = "read_parquet"
-            
-            load_sql = f"CREATE TABLE {table_name} AS SELECT * FROM {read_func}('{path}')"
-            conn.execute(load_sql)
+            log(f"  Loading '{table_name}' from {path}")
+            conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_parquet('{path}')")
             
             result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
-            count = result[0] if result else 0
-            log(f"  Loaded {count} rows into '{table_name}'")
+            log(f"  Loaded {result[0] if result else 0} rows")
         
         # Create input_data alias if single input
         if len(inputs) == 1:
             table_name = sanitize_table_name(inputs[0]["nodeName"])
-            log(f"Creating 'input_data' alias for '{table_name}'")
             conn.execute(f"CREATE VIEW input_data AS SELECT * FROM {table_name}")
         
         # Execute SQL transformation
-        log("Executing SQL transformation...")
+        log("Executing SQL...")
         result_table = sanitize_table_name(node_name)
-        create_table_sql = f"CREATE TABLE {result_table} AS {sql_query}"
-        conn.execute(create_table_sql)
+        conn.execute(f"CREATE TABLE {result_table} AS {sql_query}")
         
         result = conn.execute(f"SELECT COUNT(*) FROM {result_table}").fetchone()
         row_count = result[0] if result else 0
-        log(f"Transformation produced {row_count} rows")
+        log(f"Result: {row_count} rows")
         
-        # Export results for each output file
+        # Export results (Parquet only)
+        outputs = []
         for output_file in output_files:
             output_name = output_file["name"]
-            output_format = output_file["format"]
-            output_path = f"{base_path}/{output_name}.{get_extension(output_format)}"
+            output_path = f"{base_path}/{output_name}.parquet"
             
-            log(f"Exporting '{output_name}' to {output_path}...")
+            log(f"Exporting to {output_path}...")
+            conn.execute(f"COPY {result_table} TO '{output_path}' (FORMAT PARQUET, COMPRESSION 'snappy')")
             
-            # Get format options
-            if output_format == "parquet":
-                format_options = "FORMAT PARQUET, COMPRESSION 'snappy'"
-            elif output_format == "csv":
-                format_options = "FORMAT CSV, HEADER true"
-            elif output_format == "json":
-                format_options = "FORMAT JSON"
-            else:
-                format_options = "FORMAT PARQUET"
-            
-            export_sql = f"COPY {result_table} TO '{output_path}' ({format_options})"
-            conn.execute(export_sql)
-            log(f"  Exported {row_count} rows to {output_path}")
+            outputs.append({
+                "name": output_name,
+                "path": output_path,
+                "format": "parquet",
+            })
         
-        log("=== Transformer Node Complete ===")
+        log("=== Complete ===")
         
-        # Output result as JSON
-        result_json = {
+        print(json.dumps({
             "success": True,
             "nodeName": node_name,
             "rowCount": row_count,
-            "outputs": [
-                {
-                    "name": f["name"],
-                    "path": f"{base_path}/{f['name']}.{get_extension(f['format'])}",
-                    "format": f["format"],
-                }
-                for f in output_files
-            ],
-        }
-        print(json.dumps(result_json))
+            "outputs": outputs,
+        }))
         
     except Exception as e:
         log_error(f"Failed: {e}")
-        result_json = {
+        print(json.dumps({
             "success": False,
             "nodeName": node_name,
             "error": str(e),
-        }
-        print(json.dumps(result_json))
+        }))
         sys.exit(1)
     finally:
         conn.close()
