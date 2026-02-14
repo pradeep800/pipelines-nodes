@@ -83,8 +83,9 @@ def main():
     conn = duckdb.connect(":memory:")
     
     try:
-        # Load httpfs extension
-        log("Loading httpfs extension...")
+        # Install and load httpfs extension
+        log("Installing httpfs extension...")
+        conn.install_extension("httpfs")
         conn.load_extension("httpfs")
         
         # Configure S3
