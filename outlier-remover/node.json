@@ -1,0 +1,65 @@
+{
+  "version": "1.0",
+  "nodeType": "processing",
+  "name": "Outlier Remover",
+  "shortDescription": "Remove rows with outlier values from the dataset",
+  "description": "Detects and removes outlier rows using IQR (simple percentile-based), Z-Score, or Isolation Forest (ML-based). Useful for cleaning data before analysis or visualization in Superset.",
+  "hasInput": true,
+  "inputDescription": "Dataset to clean",
+  "config": {
+    "name": {
+      "type": "string",
+      "label": "Name",
+      "description": "Unique identifier for this node in the pipeline",
+      "required": true,
+      "unique": true,
+      "placeholder": "e.g. remove_outliers",
+      "validation": {
+        "patternKey": "snake_case"
+      }
+    },
+    "method": {
+      "type": "select",
+      "label": "Detection Method",
+      "description": "IQR: removes rows outside 1.5x interquartile range. Z-Score: removes rows more than N standard deviations from mean. Isolation Forest: ML-based, good for multi-column outliers.",
+      "required": true,
+      "unique": false,
+      "options": [
+        { "value": "iqr", "label": "IQR (Interquartile Range)" },
+        { "value": "zscore", "label": "Z-Score" },
+        { "value": "isolation_forest", "label": "Isolation Forest (ML-based)" }
+      ]
+    },
+    "columns": {
+      "type": "string",
+      "label": "Columns to Check",
+      "description": "Comma-separated numeric column names to check for outliers. Leave blank to use all numeric columns.",
+      "required": false,
+      "unique": false,
+      "placeholder": "e.g. age, salary, score"
+    },
+    "threshold": {
+      "type": "string",
+      "label": "Threshold",
+      "description": "IQR: multiplier (default 1.5). Z-Score: max std deviations (default 3). Isolation Forest: contamination 0.0-0.5 (default 0.05).",
+      "required": false,
+      "unique": false,
+      "placeholder": "e.g. 1.5"
+    }
+  },
+  "hasOutput": true,
+  "outputDescription": "Cleaned dataset with outlier rows removed",
+  "outputFiles": [
+    {
+      "name": "result",
+      "format": "parquet",
+      "path": "{{artifacts}}/{{pipeline.name}}/{{execution.timestamp}}/{{node.name}}/result.parquet"
+    }
+  ],
+  "implementation": {
+    "type": "container",
+    "entrypoint": "python transform.py",
+    "dockerfilePath": "Dockerfile",
+    "dockerContext": "outlier-remover"
+  }
+}
