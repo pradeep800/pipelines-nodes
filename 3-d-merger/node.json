@@ -1,14 +1,11 @@
 {
   "version": "1.0",
   "nodeType": "processing",
-  "name": "3 D Merger",
+  "name": "3D Merger",
   "shortDescription": "Merge STL meshes from upstream inputs into a single output file",
   "description": "Downloads STL files from upstream nodes, merges them into a single mesh, and uploads the merged result to S3 as an STL artifact.",
   "hasInput": true,
   "inputDescription": "Input STL files to merge",
-  "upstreamFileExtensions": [
-    "stl"
-  ],
   "config": {
     "name": {
       "type": "string",
