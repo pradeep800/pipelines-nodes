@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-3D File Fetcher — batch worker for Argo (no Streamlit server).
+3 D Merger - batch worker for Argo (no Streamlit server).
 
 Reads NODE_CONTEXT, downloads upstream STL paths from S3, merges meshes with vedo,
 uploads merged STL to the node's artifact output path, then exits.
@@ -22,11 +22,11 @@ from vedo import load, merge, write
 
 
 def log(msg: str) -> None:
-    print(f"[3D] {msg}", flush=True)
+    print(f"[3 D MERGER] {msg}", flush=True)
 
 
 def log_err(msg: str) -> None:
-    print(f"[3D ERROR] {msg}", file=sys.stderr, flush=True)
+    print(f"[3 D MERGER ERROR] {msg}", file=sys.stderr, flush=True)
 
 
 def parse_node_context() -> dict:
@@ -81,9 +81,9 @@ def main() -> None:
     out_files = output.get("files") or []
 
     node_name = node.get("name", "node")
-    node_slug = node.get("slug", "3d-transformer")
+    node_slug = node.get("slug", "3-d-merger")
 
-    log(f"=== 3D merge ({node_slug}) ===")
+    log(f"=== 3 D merger ({node_slug}) ===")
     log(f"Node name: {node_name}")
 
     if not base_path:
@@ -100,7 +100,7 @@ def main() -> None:
     bucket = os.environ.get("S3_BUCKET", "data-pipeline")
 
     stl_local_paths: list[str] = []
-    root = tempfile.mkdtemp(prefix="3d_merge_")
+    root = tempfile.mkdtemp(prefix="3_d_merger_")
     try:
         for i, inp in enumerate(inputs):
             out = inp.get("output") or {}
@@ -129,7 +129,10 @@ def main() -> None:
         merged_name = f"{out_name}.{ext}"
 
         base = base_path.rstrip("/")
-        dest_uri = f"{base}/{merged_name}"
+        if base.lower().endswith(f".{ext}"):
+            dest_uri = base
+        else:
+            dest_uri = f"{base}/{merged_name}"
         db, dkey = parse_s3_uri(dest_uri)
 
         merged_local = os.path.join(root, merged_name)
