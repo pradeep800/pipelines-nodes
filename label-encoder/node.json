@@ -1,0 +1,52 @@
+{
+  "version": "1.0",
+  "nodeType": "processing",
+  "name": "Label Encoder",
+  "shortDescription": "Convert text/categorical columns into numbers",
+  "description": "Encodes categorical columns (text values like 'male'/'female' or 'yes'/'no') into numeric labels (0, 1, 2...). ML models require numbers, not text. Adds new '_encoded' columns alongside the originals.",
+  "hasInput": true,
+  "inputDescription": "Dataset with categorical columns to encode",
+  "config": {
+    "name": {
+      "type": "string",
+      "label": "Name",
+      "description": "Unique identifier for this node in the pipeline",
+      "required": true,
+      "unique": true,
+      "placeholder": "e.g. encode_categories",
+      "validation": {
+        "patternKey": "snake_case"
+      }
+    },
+    "columns": {
+      "type": "string",
+      "label": "Columns to Encode",
+      "description": "Comma-separated column names containing text/categorical values to convert to numbers.",
+      "required": true,
+      "unique": false,
+      "placeholder": "e.g. gender, diagnosis, city"
+    },
+    "keep_original": {
+      "type": "boolean",
+      "label": "Keep Original Columns",
+      "description": "If enabled, original text columns are kept alongside new '_encoded' columns. If disabled, originals are replaced.",
+      "required": false,
+      "unique": false
+    }
+  },
+  "hasOutput": true,
+  "outputDescription": "Dataset with categorical columns encoded as integers",
+  "outputFiles": [
+    {
+      "name": "result",
+      "format": "parquet",
+      "path": "{{artifacts}}/{{pipeline.name}}/{{execution.timestamp}}/{{node.name}}/result.parquet"
+    }
+  ],
+  "implementation": {
+    "type": "container",
+    "entrypoint": "python transform.py",
+    "dockerfilePath": "Dockerfile",
+    "dockerContext": "label-encoder"
+  }
+}

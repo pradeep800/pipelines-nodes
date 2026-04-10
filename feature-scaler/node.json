@@ -1,0 +1,56 @@
+{
+  "version": "1.0",
+  "nodeType": "processing",
+  "name": "Feature Scaler",
+  "shortDescription": "Scale numeric columns using StandardScaler or MinMaxScaler",
+  "description": "Scales numeric columns so they are on the same range. StandardScaler makes mean=0 and std=1. MinMaxScaler squishes values between 0 and 1. Required before most ML models.",
+  "hasInput": true,
+  "inputDescription": "Dataset with numeric columns to scale",
+  "config": {
+    "name": {
+      "type": "string",
+      "label": "Name",
+      "description": "Unique identifier for this node in the pipeline",
+      "required": true,
+      "unique": true,
+      "placeholder": "e.g. scale_features",
+      "validation": {
+        "patternKey": "snake_case"
+      }
+    },
+    "method": {
+      "type": "select",
+      "label": "Scaling Method",
+      "description": "StandardScaler: mean=0, std=1. MinMaxScaler: values between 0 and 1.",
+      "required": true,
+      "unique": false,
+      "options": [
+        { "value": "standard", "label": "StandardScaler (mean=0, std=1)" },
+        { "value": "minmax", "label": "MinMaxScaler (0 to 1)" }
+      ]
+    },
+    "columns": {
+      "type": "string",
+      "label": "Columns to Scale",
+      "description": "Comma-separated column names to scale. Leave blank to scale all numeric columns automatically.",
+      "required": false,
+      "unique": false,
+      "placeholder": "e.g. age, salary, score"
+    }
+  },
+  "hasOutput": true,
+  "outputDescription": "Dataset with specified numeric columns scaled",
+  "outputFiles": [
+    {
+      "name": "result",
+      "format": "parquet",
+      "path": "{{artifacts}}/{{pipeline.name}}/{{execution.timestamp}}/{{node.name}}/result.parquet"
+    }
+  ],
+  "implementation": {
+    "type": "container",
+    "entrypoint": "python transform.py",
+    "dockerfilePath": "Dockerfile",
+    "dockerContext": "feature-scaler"
+  }
+}
