@@ -1,0 +1,50 @@
+{
+  "version": "1.0",
+  "nodeType": "processing",
+  "name": "SQL Transformer",
+  "shortDescription": "Transform data using SQL queries powered by DuckDB",
+  "description": "Executes SQL transformations using DuckDB. Loads input dependencies as tables, runs your SQL query, and exports results to S3 in Parquet, CSV, or JSON format.",
+  "githubUrl": "https://github.com/<repo-link>",
+  "githubRef": "main",
+  "lucideIcon": "Database",
+  "color": "#3b82f6",
+  "hasInput": true,
+  "inputDescription": "Input data files to load as DuckDB tables",
+  "config": {
+    "name": {
+      "type": "string",
+      "label": "Name",
+      "description": "Unique identifier for this transformer node in the pipeline",
+      "required": true,
+      "unique": true,
+      "placeholder": "e.g. filter_active_users",
+      "validation": {
+        "patternKey": "snake_case"
+      }
+    },
+    "sql": {
+      "type": "code",
+      "label": "SQL Query",
+      "description": "SQL query to execute. Input tables are available by their dependency names.",
+      "required": true,
+      "unique": false,
+      "placeholder": "SELECT * FROM input_data WHERE status = 'active'",
+      "language": "sql"
+    }
+  },
+  "hasOutput": true,
+  "outputDescription": "Transformed data output",
+  "outputFiles": [
+    {
+      "name": "result",
+      "format": "parquet",
+      "path": "{{artifacts}}/{{pipeline.name}}/{{execution.timestamp}}/{{node.name}}/result.parquet"
+    }
+  ],
+  "implementation": {
+    "type": "container",
+    "entrypoint": "python transform.py",
+    "dockerfilePath": "Dockerfile",
+    "dockerContext": "sql-transformer"
+  }
+}
