@@ -2,20 +2,18 @@
 """
 DB View Source - Custom Node Container
 
-Connects to a PostgreSQL database, reads a specified view, and exports
-the result to S3 as Parquet for downstream pipeline nodes.
+Authenticates against Keycloak using provided credentials, then connects to the
+Keycloak PostgreSQL database, reads a specified view, and exports the result to
+S3 as Parquet for downstream pipeline nodes.
 
 Environment Variables:
   NODE_CONTEXT       - JSON object with structure:
                        {
                          "node": { "name": "fetch_users_view", "slug": "db-view-source" },
                          "config": {
-                           "host": "localhost",
-                           "port": 5432,
-                           "database": "mydb",
-                           "username": "postgres",
-                           "password": "secret",
-                           "view_name": "public.active_users"
+                           "username": "admin",
+                           "password": "admin",
+                           "view_name": "public.user_entity"
                          },
                          "output": {
                            "basePath": "s3://bucket/artifacts/...",
@@ -30,12 +28,30 @@ Environment Variables:
   S3_BUCKET          - MinIO bucket name
   S3_USE_SSL         - Use SSL for S3
   S3_REGION          - S3 region
+
+  KEYCLOAK_URL       - Keycloak service URL (default: http://keycloak.data-pipeline.svc.cluster.local:8080)
+  KEYCLOAK_REALM     - Keycloak realm (default: data-pipeline-builder)
+  KC_DB_HOST         - Keycloak PostgreSQL host (default: postgres.data-pipeline.svc.cluster.local)
+  KC_DB_PORT         - Keycloak PostgreSQL port (default: 5432)
+  KC_DB_NAME         - Keycloak database name (default: keycloak)
+  KC_DB_USER         - Keycloak database user (default: keycloak)
+  KC_DB_PASSWORD     - Keycloak database password (default: keycloak)
 """
 
 import os
 import sys
 import json
 import duckdb
+import requests
+
+
+KEYCLOAK_URL = os.environ.get("KEYCLOAK_URL", "http://keycloak.data-pipeline.svc.cluster.local:8080")
+KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "data-pipeline-builder")
+KC_DB_HOST = os.environ.get("KC_DB_HOST", "postgres.data-pipeline.svc.cluster.local")
+KC_DB_PORT = int(os.environ.get("KC_DB_PORT", "5432"))
+KC_DB_NAME = os.environ.get("KC_DB_NAME", "keycloak")
+KC_DB_USER = os.environ.get("KC_DB_USER", "keycloak")
+KC_DB_PASSWORD = os.environ.get("KC_DB_PASSWORD", "keycloak")
 
 
 def log(message: str):
@@ -80,6 +96,27 @@ def validate_context(ctx: dict):
         raise ValueError("output.files is required in NODE_CONTEXT")
 
 
+def authenticate_keycloak(username: str, password: str) -> str:
+    """Authenticate against Keycloak and return an access token."""
+    token_url = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/token"
+    response = requests.post(
+        token_url,
+        data={
+            "grant_type": "password",
+            "client_id": "admin-cli",
+            "username": username,
+            "password": password,
+        },
+        timeout=15,
+    )
+    if response.status_code != 200:
+        raise ValueError(
+            f"Keycloak authentication failed for user '{username}': "
+            f"{response.status_code} {response.json().get('error_description', response.text)}"
+        )
+    return response.json()["access_token"]
+
+
 def main():
     ctx = parse_node_context()
     s3_config = get_s3_config()
@@ -89,9 +126,6 @@ def main():
     output = ctx["output"]
 
     node_name = node["name"]
-    host = "postgres.data-pipeline.svc.cluster.local"
-    port = 5432
-    database = "postgres"
     username = config["username"]
     password = config["password"]
     view_name = config["view_name"]
@@ -100,10 +134,15 @@ def main():
 
     log("=== DB View Source Node ===")
     log(f"Node: {node_name}")
-    log(f"Connecting to: {host}:{port}/{database} as {username}")
-    log(f"View: {view_name}")
 
     validate_context(ctx)
+
+    log(f"Authenticating with Keycloak as '{username}'...")
+    authenticate_keycloak(username, password)
+    log("Keycloak authentication successful")
+
+    log(f"Connecting to Keycloak database: {KC_DB_HOST}:{KC_DB_PORT}/{KC_DB_NAME}")
+    log(f"View: {view_name}")
 
     conn = duckdb.connect(":memory:")
 
@@ -130,8 +169,11 @@ def main():
         """)
         log("S3 configured")
 
-        log(f"Attaching PostgreSQL database...")
-        pg_conn_str = f"host={host} port={port} dbname={database} user={username} password={password}"
+        log("Attaching Keycloak PostgreSQL database...")
+        pg_conn_str = (
+            f"host={KC_DB_HOST} port={KC_DB_PORT} "
+            f"dbname={KC_DB_NAME} user={KC_DB_USER} password={KC_DB_PASSWORD}"
+        )
         conn.execute(f"ATTACH '{pg_conn_str}' AS pg_db (TYPE POSTGRES, READ_ONLY)")
         log("PostgreSQL attached")
 
