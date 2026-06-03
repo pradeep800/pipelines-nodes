@@ -11,13 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir duckdb
 
 # Pre-install extensions to avoid runtime downloads in air-gapped k8s
-RUN python -c "
-import duckdb
-conn = duckdb.connect()
-conn.install_extension('httpfs')
-conn.install_extension('postgres')
-conn.close()
-"
+RUN python -c "import duckdb; conn = duckdb.connect(); conn.install_extension('httpfs'); conn.install_extension('postgres'); conn.close()"
 
 COPY fetch.py ./
 
