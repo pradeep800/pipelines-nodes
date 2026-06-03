@@ -1,0 +1,88 @@
+{
+  "version": "1.0",
+  "nodeType": "processing",
+  "name": "DB View Source",
+  "shortDescription": "Fetch data from a PostgreSQL database view",
+  "description": "Connects to a PostgreSQL database using provided credentials, reads the specified view, and exports the result to S3 as Parquet for downstream nodes.",
+  "githubUrl": "https://github.com/<repo-link>",
+  "githubRef": "main",
+  "lucideIcon": "DatabaseZap",
+  "color": "#6366f1",
+  "hasInput": false,
+  "config": {
+    "name": {
+      "type": "string",
+      "label": "Node Name",
+      "description": "Unique identifier for this node in the pipeline",
+      "required": true,
+      "unique": true,
+      "placeholder": "e.g. fetch_users_view",
+      "validation": {
+        "patternKey": "snake_case"
+      }
+    },
+    "host": {
+      "type": "string",
+      "label": "Database Host",
+      "description": "PostgreSQL server hostname or IP address",
+      "required": true,
+      "unique": false,
+      "placeholder": "e.g. localhost or 192.168.1.10"
+    },
+    "port": {
+      "type": "number",
+      "label": "Port",
+      "description": "PostgreSQL port (default: 5432)",
+      "required": false,
+      "unique": false,
+      "placeholder": "5432"
+    },
+    "database": {
+      "type": "string",
+      "label": "Database Name",
+      "description": "Name of the PostgreSQL database to connect to",
+      "required": true,
+      "unique": false,
+      "placeholder": "e.g. mydb"
+    },
+    "username": {
+      "type": "string",
+      "label": "Username",
+      "description": "PostgreSQL username for authentication",
+      "required": true,
+      "unique": false,
+      "placeholder": "e.g. postgres"
+    },
+    "password": {
+      "type": "string",
+      "label": "Password",
+      "description": "PostgreSQL password for authentication",
+      "required": true,
+      "unique": false,
+      "placeholder": "••••••••"
+    },
+    "view_name": {
+      "type": "string",
+      "label": "View Name",
+      "description": "Name of the database view or table to read from",
+      "required": true,
+      "unique": false,
+      "placeholder": "e.g. public.active_users"
+    }
+  },
+  "hasOutput": true,
+  "outputDescription": "Data fetched from the database view as Parquet",
+  "outputFiles": [
+    {
+      "name": "output",
+      "format": "parquet",
+      "path": "{{artifacts}}/{{pipeline.name}}/{{execution.timestamp}}/{{node.name}}/output.parquet"
+    }
+  ],
+  "implementation": {
+    "type": "container",
+    "entrypoint": "python fetch.py",
+    "dockerfilePath": "Dockerfile",
+    "dockerContext": "db-view-source"
+  }
+}
