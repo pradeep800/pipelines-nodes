@@ -28,7 +28,7 @@
       "description": "Username for authentication",
       "required": true,
       "unique": false,
-      "placeholder": "e.g. postgres",
+      "placeholder": "e.g. john_doe",
       "order": 1
     },
     "password": {
