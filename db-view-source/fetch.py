@@ -70,7 +70,7 @@ def get_s3_config() -> dict:
 
 def validate_context(ctx: dict):
     config = ctx.get("config", {})
-    required = ["host", "database", "username", "password", "view_name"]
+    required = ["username", "password", "view_name"]
     for field in required:
         if not config.get(field):
             raise ValueError(f"config.{field} is required in NODE_CONTEXT")
@@ -89,9 +89,9 @@ def main():
     output = ctx["output"]
 
     node_name = node["name"]
-    host = config["host"]
-    port = int(config.get("port") or 5432)
-    database = config["database"]
+    host = "postgres.data-pipeline.svc.cluster.local"
+    port = 5432
+    database = "postgres"
     username = config["username"]
     password = config["password"]
     view_name = config["view_name"]

@@ -21,30 +21,6 @@
         "patternKey": "snake_case"
       }
     },
-    "host": {
-      "type": "string",
-      "label": "Database Host",
-      "description": "PostgreSQL server hostname or IP address",
-      "required": true,
-      "unique": false,
-      "placeholder": "e.g. localhost or 192.168.1.10"
-    },
-    "port": {
-      "type": "number",
-      "label": "Port",
-      "description": "PostgreSQL port (default: 5432)",
-      "required": false,
-      "unique": false,
-      "placeholder": "5432"
-    },
-    "database": {
-      "type": "string",
-      "label": "Database Name",
-      "description": "Name of the PostgreSQL database to connect to",
-      "required": true,
-      "unique": false,
-      "placeholder": "e.g. mydb"
-    },
     "username": {
       "type": "string",
       "label": "Username",
