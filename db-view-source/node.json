@@ -17,6 +17,7 @@
       "required": true,
       "unique": true,
       "placeholder": "e.g. fetch_users_view",
+      "order": 0,
       "validation": {
         "patternKey": "snake_case"
       }
@@ -27,7 +28,8 @@
       "description": "Username for authentication",
       "required": true,
       "unique": false,
-      "placeholder": "e.g. postgres"
+      "placeholder": "e.g. postgres",
+      "order": 1
     },
     "password": {
       "type": "string",
@@ -35,7 +37,8 @@
       "description": "Password for authentication",
       "required": true,
       "unique": false,
-      "placeholder": "••••••••"
+      "placeholder": "••••••••",
+      "order": 2
     },
     "view_name": {
       "type": "string",
@@ -43,7 +46,8 @@
       "description": "Name of the database view or table to read from",
       "required": true,
       "unique": false,
-      "placeholder": "e.g. public.active_users"
+      "placeholder": "e.g. public.active_users",
+      "order": 3
     }
   },
   "hasOutput": true,
