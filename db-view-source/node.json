@@ -24,7 +24,7 @@
     "username": {
       "type": "string",
       "label": "Username",
-      "description": "PostgreSQL username for authentication",
+      "description": "Username for authentication",
       "required": true,
       "unique": false,
       "placeholder": "e.g. postgres"
@@ -32,7 +32,7 @@
     "password": {
       "type": "string",
       "label": "Password",
-      "description": "PostgreSQL password for authentication",
+      "description": "Password for authentication",
       "required": true,
       "unique": false,
       "placeholder": "••••••••"
