@@ -4,14 +4,12 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install cbr-data-access SDK from bundled source
-COPY sdk/ ./sdk/
-RUN pip install --no-cache-dir ./sdk/
-
-# boto3 for MinIO uploads
-RUN pip install --no-cache-dir boto3
+RUN pip install --no-cache-dir \
+    git+https://github.com/datakaveri/data-access-py-sdk.git \
+    boto3
 
 COPY fetch.py ./
 
