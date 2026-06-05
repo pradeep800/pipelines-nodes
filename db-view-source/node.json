@@ -25,10 +25,10 @@
     "username": {
       "type": "string",
       "label": "CBR Username",
-      "description": "Your CBR login email (e.g. user@datakaveri.org)",
+      "description": "Your CBR login email (e.g. test@.org)",
       "required": true,
       "unique": false,
-      "placeholder": "e.g. user@datakaveri.org",
+      "placeholder": "e.g. test@.org",
       "order": 1
     },
     "password": {
