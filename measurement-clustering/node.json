@@ -3,13 +3,13 @@
   "nodeType": "processing",
   "name": "Patient Measurement Clustering",
   "shortDescription": "Cluster patients by clinical measurement scores using KMeans",
-  "description": "Takes an OMOP-format measurement table (Parquet) and clusters patients based on their clinical scores (e.g. HAM-D, PSQI, CDR). Pivots the data so each patient becomes one row, runs KMeans clustering, and outputs the original table with a cluster label column added. Useful for identifying patient subgroups for further analysis in Superset.",
+  "description": "Takes an OMOP-format measurement table and clusters patients based on their clinical scores (e.g. HAM-D, PSQI, CDR). Pivots the data so each patient becomes one row, runs KMeans clustering plus PCA, and outputs a per-patient summary table with PCA coordinates, a severity cluster label, and clinical summary scores. Useful for identifying patient subgroups and plotting them as a scatter chart in Superset.",
   "githubUrl": "https://github.com/<repo-link>",
   "githubRef": "main",
   "lucideIcon": "Users",
   "color": "#10b981",
   "hasInput": true,
-  "inputDescription": "OMOP measurement table as Parquet with columns: person_id, measurement_source_value, value_as_number",
+  "inputDescription": "OMOP measurement table with columns: person_id, measurement_id, measurement_source_value, value_as_number",
   "config": {
     "name": {
       "type": "string",
@@ -37,7 +37,7 @@
     }
   },
   "hasOutput": true,
-  "outputDescription": "Original measurement table with an added 'cluster' column (integer, 0-indexed) per patient",
+  "outputDescription": "Per-patient summary table with PCA coordinates (pca_x, pca_y), cluster id, severity cluster_label, clinical summary scores (ham_d_total, psqi_total, cdr_score), and num_measurements",
   "outputFiles": [
     {
       "name": "result",

@@ -2,11 +2,12 @@
 """
 Patient Measurement Clustering - Custom Node Container
 
-Pivots an OMOP-format measurement table (person_id, measurement_source_value,
-value_as_number) so each patient becomes one row, runs KMeans clustering on
-the resulting feature matrix, and writes back the original table with an
-added 'cluster' column. Uses DuckDB for S3 I/O, following the same pattern
-as the SQL Transformer node.
+Pivots an OMOP-format measurement table (person_id, measurement_id,
+measurement_source_value, value_as_number) so each patient becomes one row,
+runs KMeans clustering on the resulting feature matrix, and writes a
+per-patient summary table with PCA coordinates, a human-readable severity
+cluster label, and clinical summary scores (HAM-D, PSQI, CDR). Uses DuckDB
+for S3 I/O, following the same pattern as the SQL Transformer node.
 """
 
 import os
@@ -17,6 +18,7 @@ import pandas as pd
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
+from sklearn.decomposition import PCA
 
 
 def log(msg):
@@ -55,7 +57,12 @@ def setup_duckdb_s3(conn, s3):
 
 
 def run_clustering(df: pd.DataFrame, n_clusters: int) -> pd.DataFrame:
-    """Pivot OMOP measurement table -> KMeans -> cluster labels per person_id."""
+    """Pivot OMOP measurement table -> KMeans + PCA -> per-patient summary table.
+
+    Returns one row per patient with PCA coordinates, a numeric cluster id, a
+    human-readable severity cluster label, clinical summary scores (HAM-D,
+    PSQI, CDR), and the number of measurements recorded for that patient.
+    """
     pivot = df.pivot_table(
         index="person_id",
         columns="measurement_source_value",
@@ -73,7 +80,39 @@ def run_clustering(df: pd.DataFrame, n_clusters: int) -> pd.DataFrame:
     for i in range(n_clusters):
         log(f"  Cluster {i}: {(labels==i).sum()} patients")
 
-    return pd.DataFrame({"person_id": person_ids.values, "cluster": labels})
+    pca   = PCA(n_components=2)
+    X_pca = pca.fit_transform(X_scaled)
+    log(f"PCA variance explained: PC1={pca.explained_variance_ratio_[0]*100:.1f}%  PC2={pca.explained_variance_ratio_[1]*100:.1f}%")
+
+    # Clinical summary scores per patient
+    ham_d_cols = [c for c in pivot.columns if "ham_d" in str(c)]
+    psqi_cols  = [c for c in pivot.columns if "psqi" in str(c) and "cumulative" not in str(c)]
+    cdr_cols   = [c for c in pivot.columns if "cdr" in str(c)]
+
+    ham_d_total = pivot[ham_d_cols].sum(axis=1).round(2).values
+    psqi_total  = pivot[psqi_cols].sum(axis=1).round(2).values
+    cdr_score   = pivot[cdr_cols].mean(axis=1).round(2).values
+
+    # Assign human-readable cluster names based on HAM-D severity
+    cluster_means = {c: ham_d_total[labels == c].mean() for c in range(n_clusters)}
+    sorted_clusters = sorted(cluster_means, key=cluster_means.get)
+    severity_names = ["Low Severity", "Moderate Severity", "High Severity"]
+    name_map = {
+        c: severity_names[i] if n_clusters == 3 else f"Cluster {i}"
+        for i, c in enumerate(sorted_clusters)
+    }
+
+    return pd.DataFrame({
+        "person_id":        person_ids.values,
+        "pca_x":            X_pca[:, 0].round(4),
+        "pca_y":            X_pca[:, 1].round(4),
+        "cluster":          labels,
+        "cluster_label":    [name_map[l] for l in labels],
+        "ham_d_total":      ham_d_total,
+        "psqi_total":       psqi_total,
+        "cdr_score":        cdr_score,
+        "num_measurements": df.groupby("person_id")["measurement_id"].count().reindex(person_ids.values).values,
+    })
 
 
 def main():
@@ -109,17 +148,15 @@ def main():
     df = conn.execute(f"SELECT * FROM {read_func}('{input_path}')").df()
     log(f"Loaded {len(df)} rows, columns: {list(df.columns)}")
 
-    required = {"person_id", "measurement_source_value", "value_as_number"}
+    required = {"person_id", "measurement_id", "measurement_source_value", "value_as_number"}
     missing  = required - set(df.columns)
     if missing:
         log_error(f"Missing required columns: {missing}")
         sys.exit(1)
 
     log("Running KMeans clustering...")
-    cluster_df = run_clustering(df, n_clusters)
-
-    result_df = df.merge(cluster_df, on="person_id", how="left")
-    log(f"Output has {len(result_df)} rows")
+    result_df = run_clustering(df, n_clusters)
+    log(f"Output has {len(result_df)} patients")
 
     log("Writing output parquet to S3...")
     conn.register("result_table", result_df)
@@ -132,10 +169,10 @@ def main():
     print(json.dumps({
         "success":      True,
         "nodeName":     node["name"],
-        "totalRows":    len(result_df),
+        "totalPatients": len(result_df),
         "nClusters":    n_clusters,
         "clusterCounts": {
-            str(i): int((cluster_df["cluster"] == i).sum())
+            str(i): int((result_df["cluster"] == i).sum())
             for i in range(n_clusters)
         },
     }))
