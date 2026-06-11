@@ -86,10 +86,11 @@ def main():
     n_clusters = int(config.get("n_clusters", 3))
     base_path  = output["basePath"]
     input_path = inputs[0]["output"]["path"]
+    input_format = inputs[0]["output"].get("format", "parquet").lower()
     output_path = f"{base_path}/result.parquet"
 
     log(f"=== Patient Clustering: {node['name']} ===")
-    log(f"Input  : {input_path}")
+    log(f"Input  : {input_path} (format: {input_format})")
     log(f"Output : {output_path}")
     log(f"n_clusters: {n_clusters}")
 
@@ -97,8 +98,15 @@ def main():
     conn = duckdb.connect(":memory:")
     setup_duckdb_s3(conn, s3)
 
-    log("Reading input parquet from S3...")
-    df = conn.execute(f"SELECT * FROM read_parquet('{input_path}')").df()
+    if input_format == "csv":
+        read_func = "read_csv_auto"
+    elif input_format == "json":
+        read_func = "read_json_auto"
+    else:
+        read_func = "read_parquet"
+
+    log("Reading input from S3...")
+    df = conn.execute(f"SELECT * FROM {read_func}('{input_path}')").df()
     log(f"Loaded {len(df)} rows, columns: {list(df.columns)}")
 
     required = {"person_id", "measurement_source_value", "value_as_number"}
