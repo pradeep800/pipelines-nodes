@@ -1,0 +1,86 @@
+{
+  "version": "1.0",
+  "nodeType": "processing",
+  "name": "DB Table Source",
+  "shortDescription": "Fetch a table or run a query against the CBR data platform",
+  "description": "Authenticates with the CBR Keycloak, then either downloads a table from your approved access request or runs a custom SQL query using the cbr-data-access SDK, and stores the result in MinIO as Parquet for downstream nodes.",
+  "githubUrl": "https://github.com/<repo-link>",
+  "githubRef": "main",
+  "lucideIcon": "DatabaseZap",
+  "color": "#6366f1",
+  "hasInput": false,
+  "config": {
+    "name": {
+      "type": "string",
+      "label": "Node Name",
+      "description": "Unique identifier for this node in the pipeline",
+      "required": true,
+      "unique": true,
+      "placeholder": "e.g. fetch_measurement_table",
+      "order": 0,
+      "validation": {
+        "patternKey": "snake_case"
+      }
+    },
+    "username": {
+      "type": "string",
+      "label": "CBR Username",
+      "description": "Your CBR login email (e.g. test@.org)",
+      "required": true,
+      "unique": false,
+      "placeholder": "e.g. test@.org",
+      "order": 1
+    },
+    "password": {
+      "type": "string",
+      "label": "CBR Password",
+      "description": "Your CBR login password",
+      "required": true,
+      "unique": false,
+      "placeholder": "••••••••",
+      "order": 2
+    },
+    "table_name": {
+      "type": "string",
+      "label": "Table Name",
+      "description": "Bare table name to download from your approved access request (e.g. person, measurement). Leave blank if using a custom SQL query.",
+      "required": false,
+      "unique": false,
+      "placeholder": "e.g. measurement",
+      "order": 3
+    },
+    "sql_query": {
+      "type": "string",
+      "label": "Custom SQL Query (optional)",
+      "description": "Advanced: a custom SELECT query (plain table names resolve against your approved access request). If set, this overrides Table Name.",
+      "required": false,
+      "unique": false,
+      "placeholder": "e.g. SELECT * FROM measurement WHERE value_as_number IS NOT NULL",
+      "order": 4
+    },
+    "request_id": {
+      "type": "string",
+      "label": "Access Request ID (optional)",
+      "description": "Only needed if you have more than one approved access request. The request UUID or req_... schema to use.",
+      "required": false,
+      "unique": false,
+      "placeholder": "e.g. dc43d8d9-6f6c-4152-b5f1-0f9668ba01e4",
+      "order": 5
+    }
+  },
+  "hasOutput": true,
+  "outputDescription": "Data fetched from the database table or query as Parquet",
+  "outputFiles": [
+    {
+      "name": "output",
+      "format": "parquet",
+      "path": "{{artifacts}}/{{pipeline.name}}/{{execution.timestamp}}/{{node.name}}/output.parquet"
+    }
+  ],
+  "implementation": {
+    "type": "container",
+    "entrypoint": "python fetch.py",
+    "dockerfilePath": "Dockerfile",
+    "dockerContext": "db-table-source"
+  }
+}
