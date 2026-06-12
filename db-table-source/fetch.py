@@ -2,10 +2,10 @@
 """
 DB Table Source - Custom Node Container
 
-Uses the cbr-data-access SDK to authenticate with Keycloak, run a query
-against the caller's approved access request on the CBR data-access server,
-and upload the result as Parquet to MinIO so downstream pipeline nodes can
-consume it as an artifact.
+Uses the cbr-data-access SDK to authenticate with Keycloak, download a
+table from the caller's approved access request on the CBR data-access
+server, and upload the result as Parquet to MinIO so downstream pipeline
+nodes can consume it as an artifact.
 """
 
 import json
@@ -47,16 +47,11 @@ def main():
 
     username   = config["username"]
     password   = config["password"]
-    table_name = (config.get("table_name") or "").strip()
-    sql_query  = (config.get("sql_query") or "").strip()
-    request_id = (config.get("request_id") or "").strip() or None
+    table_name = config["table_name"].strip()
     base_path  = output["basePath"]
     out_files  = output["files"]
 
-    if not table_name and not sql_query:
-        raise ValueError("Either 'table_name' or 'sql_query' must be provided")
-
-    log(f"Node: {node['name']} | Table: {table_name or '(custom SQL)'} | User: {username}")
+    log(f"Node: {node['name']} | Table: {table_name} | User: {username}")
 
     # Optional endpoint overrides (pass as pod env vars if needed)
     sdk_kwargs = {}
@@ -85,21 +80,10 @@ def main():
             client.login()
             log("Authenticated")
 
-            if request_id:
-                log(f"Pinning access request: {request_id}")
-                client.set_access(request_id)
-
             with tempfile.TemporaryDirectory() as tmp:
-                if sql_query:
-                    log("Running custom SQL query...")
-                    df = client.query(sql_query)
-                    local_path = os.path.join(tmp, "output.parquet")
-                    df.to_parquet(local_path, index=False)
-                    log(f"Query returned {len(df)} rows -> {local_path}")
-                else:
-                    log(f"Downloading table '{table_name}'...")
-                    local_path = client.download_table(table_name, tmp, file_format="parquet")
-                    log(f"Downloaded -> {local_path}")
+                log(f"Downloading table '{table_name}'...")
+                local_path = client.download_table(table_name, tmp, file_format="parquet")
+                log(f"Downloaded -> {local_path}")
 
                 for f in out_files:
                     s3_key = s3_key_from_path(f"{base_path}/{f['name']}.parquet")
@@ -110,7 +94,7 @@ def main():
         print(json.dumps({
             "success": True,
             "nodeName": node["name"],
-            "tableName": table_name or None,
+            "tableName": table_name,
             "outputs": [
                 {"name": f["name"], "path": f"{base_path}/{f['name']}.parquet"}
                 for f in out_files

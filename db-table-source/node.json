@@ -2,8 +2,8 @@
   "version": "1.0",
   "nodeType": "processing",
   "name": "DB Table Source",
-  "shortDescription": "Fetch a table or run a query against the CBR data platform",
-  "description": "Authenticates with the CBR Keycloak, then either downloads a table from your approved access request or runs a custom SQL query using the cbr-data-access SDK, and stores the result in MinIO as Parquet for downstream nodes.",
+  "shortDescription": "Fetch a table from the CBR data platform",
+  "description": "Authenticates with the CBR Keycloak, downloads a table from your approved access request using the cbr-data-access SDK, and stores the result in MinIO as Parquet for downstream nodes.",
   "githubUrl": "https://github.com/<repo-link>",
   "githubRef": "main",
   "lucideIcon": "DatabaseZap",
@@ -43,29 +43,11 @@
     "table_name": {
       "type": "string",
       "label": "Table Name",
-      "description": "Bare table name to download from your approved access request (e.g. person, measurement). Leave blank if using a custom SQL query.",
-      "required": false,
+      "description": "Bare table name to download from your approved access request (e.g. person, measurement).",
+      "required": true,
       "unique": false,
       "placeholder": "e.g. measurement",
       "order": 3
-    },
-    "sql_query": {
-      "type": "string",
-      "label": "Custom SQL Query (optional)",
-      "description": "Advanced: a custom SELECT query (plain table names resolve against your approved access request). If set, this overrides Table Name.",
-      "required": false,
-      "unique": false,
-      "placeholder": "e.g. SELECT * FROM measurement WHERE value_as_number IS NOT NULL",
-      "order": 4
-    },
-    "request_id": {
-      "type": "string",
-      "label": "Access Request ID (optional)",
-      "description": "Only needed if you have more than one approved access request. The request UUID or req_... schema to use.",
-      "required": false,
-      "unique": false,
-      "placeholder": "e.g. dc43d8d9-6f6c-4152-b5f1-0f9668ba01e4",
-      "order": 5
     }
   },
   "hasOutput": true,
