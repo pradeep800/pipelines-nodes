@@ -45,6 +45,6 @@
     "type": "container",
     "entrypoint": "python transform.py",
     "dockerfilePath": "Dockerfile",
-    "dockerContext": "sql-transformer"
+    "dockerContext": "transformer"
   }
 }
