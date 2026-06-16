@@ -1,0 +1,5 @@
+duckdb
+pandas==2.2.3
+pyarrow==19.0.1
+scikit-learn==1.6.1
+numpy==2.2.4
