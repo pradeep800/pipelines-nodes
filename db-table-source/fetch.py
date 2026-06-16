@@ -48,10 +48,11 @@ def main():
     username   = config["username"]
     password   = config["password"]
     table_name = config["table_name"].strip()
+    view_id    = config.get("view_id", "").strip() or None
     base_path  = output["basePath"]
     out_files  = output["files"]
 
-    log(f"Node: {node['name']} | Table: {table_name} | User: {username}")
+    log(f"Node: {node['name']} | Table: {table_name} | User: {username} | View ID: {view_id or 'auto'}")
 
     # Optional endpoint overrides (pass as pod env vars if needed)
     sdk_kwargs = {}
@@ -79,6 +80,10 @@ def main():
             log("Authenticating with Keycloak...")
             client.login()
             log("Authenticated")
+
+            if view_id:
+                log(f"Setting access request: {view_id}")
+                client.set_access(view_id)
 
             with tempfile.TemporaryDirectory() as tmp:
                 log(f"Downloading table '{table_name}'...")

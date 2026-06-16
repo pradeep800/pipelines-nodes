@@ -6,8 +6,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
+RUN pip install --no-cache-dir uv
+
 COPY sdk/ ./sdk/
-RUN pip install --no-cache-dir --timeout 1800 ./sdk/ boto3
+RUN uv pip install --system --no-cache ./sdk/ boto3
 
 COPY fetch.py ./
 
