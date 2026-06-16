@@ -63,6 +63,6 @@
     "type": "container",
     "entrypoint": "python clustering.py",
     "dockerfilePath": "Dockerfile",
-    "dockerContext": "."
+    "dockerContext": "patient-measurement-clustering"
   }
 }
