@@ -12,7 +12,8 @@ import json
 import os
 import re
 import sys
-import threading
+import tempfile
+import time
 
 import boto3
 import pandas as pd
@@ -102,58 +103,59 @@ def main():
             # header-only Parquet (mirrors the SDK's own download probe).
             col_names = list(client.query(sql + " LIMIT 0").columns)
 
-            # Stream the DB read and the S3 upload concurrently: a producer thread
-            # writes Parquet into an OS pipe while the main thread uploads the pipe
-            # straight to S3. No local-disk round-trip; the pipe's buffer applies
-            # backpressure so peak memory stays bounded.
-            producer_err = {}
-            r_fd, w_fd = os.pipe()
+            with tempfile.TemporaryDirectory() as tmp:
+                local_path = os.path.join(tmp, f"{out_files[0]['name']}.parquet")
 
-            def produce():
-                try:
-                    with os.fdopen(w_fd, "wb") as wf:
-                        writer = None
-                        for chunk in client.query_stream(sql):
-                            tbl = pa.Table.from_pandas(chunk, preserve_index=False)
-                            if writer is None:
-                                writer = pq.ParquetWriter(wf, tbl.schema)
-                                writer.write_table(tbl)
-                            else:
-                                # Pin schema so later chunks can't drift dtypes.
-                                writer.write_table(tbl.cast(writer.schema))
-                        if writer is None:  # empty table -> header-only Parquet
-                            pd.DataFrame(columns=col_names).to_parquet(wf, index=False)
-                        else:
-                            writer.close()
-                except BaseException as e:  # closing wf signals EOF to the reader
-                    producer_err["e"] = e
+                # Phase 1: stream the table to a local Parquet at full DB speed.
+                # Writing to disk (not a pipe) means the server-side cursor is
+                # never backpressured by the upload. Timing logs make the read
+                # cost visible (it was hidden before).
+                t0 = time.monotonic()
+                rows_total, next_log, writer, first = 0, 250_000, None, True
+                for chunk in client.query_stream(sql):
+                    if first:
+                        log(f"First DB chunk after {time.monotonic() - t0:.1f}s")
+                        first = False
+                    tbl = pa.Table.from_pandas(chunk, preserve_index=False)
+                    if writer is None:
+                        writer = pq.ParquetWriter(local_path, tbl.schema)
+                        writer.write_table(tbl)
+                    else:
+                        # Pin schema so later chunks can't drift dtypes.
+                        writer.write_table(tbl.cast(writer.schema))
+                    rows_total += len(chunk)
+                    if rows_total >= next_log:
+                        log(f"  read {rows_total:,} rows, "
+                            f"{os.path.getsize(local_path) / 1e6:.1f} MB, "
+                            f"{time.monotonic() - t0:.1f}s")
+                        next_log += 250_000
+                if writer is None:  # empty table -> header-only Parquet
+                    pd.DataFrame(columns=col_names).to_parquet(local_path, index=False)
+                else:
+                    writer.close()
+                size_mb = os.path.getsize(local_path) / 1e6
+                log(f"DB read+encode done: {rows_total:,} rows, {size_mb:.1f} MB "
+                    f"in {time.monotonic() - t0:.1f}s")
 
-            log(f"Streaming table '{table_name}' -> s3://{bucket}/{first_key} ...")
-            producer = threading.Thread(target=produce, daemon=True)
-            producer.start()
+                # Phase 2: upload the seekable file with parallel multipart.
+                t1 = time.monotonic()
+                transfer = TransferConfig(
+                    multipart_threshold=8 * 1024 * 1024,
+                    multipart_chunksize=8 * 1024 * 1024,
+                    max_concurrency=8,
+                    use_threads=True,
+                )
+                log(f"Uploading {size_mb:.1f} MB -> s3://{bucket}/{first_key} ...")
+                s3.upload_file(local_path, bucket, first_key, Config=transfer)
+                dt = time.monotonic() - t1
+                log(f"Upload done in {dt:.1f}s ({size_mb / max(dt, 1e-3):.1f} MB/s)")
 
-            transfer = TransferConfig(
-                multipart_threshold=16 * 1024 * 1024,
-                multipart_chunksize=16 * 1024 * 1024,
-                max_concurrency=8,
-                use_threads=True,
-            )
-            with os.fdopen(r_fd, "rb") as rf:
-                s3.upload_fileobj(rf, bucket, first_key, Config=transfer)
-
-            producer.join()
-            if "e" in producer_err:
-                # The upload may have finalized a truncated object; remove it.
-                s3.delete_object(Bucket=bucket, Key=first_key)
-                raise producer_err["e"]
-            log("Upload complete")
-
-            # Additional outputs share the same bytes: server-side copy, never
-            # re-stream the table.
-            for f in out_files[1:]:
-                extra_key = s3_key_from_path(f"{base_path}/{f['name']}.parquet")
-                log(f"Copying to s3://{bucket}/{extra_key} ...")
-                s3.copy({"Bucket": bucket, "Key": first_key}, bucket, extra_key)
+                # Additional outputs share the same bytes: server-side copy,
+                # never re-stream the table.
+                for f in out_files[1:]:
+                    extra_key = s3_key_from_path(f"{base_path}/{f['name']}.parquet")
+                    log(f"Copying to s3://{bucket}/{extra_key} ...")
+                    s3.copy({"Bucket": bucket, "Key": first_key}, bucket, extra_key)
 
         print(json.dumps({
             "success": True,
