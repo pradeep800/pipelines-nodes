@@ -67,6 +67,13 @@ def main():
     if os.environ.get("CBR_BASE_URL"):
         sdk_kwargs["base_url"] = os.environ["CBR_BASE_URL"]
 
+    # Some S3-compatible endpoints (older MinIO/Ceph) reject the request
+    # checksums newer botocore adds by default. Only send them when the
+    # operation actually requires it. The env form is ignored by botocore
+    # versions that predate the option, so it is safe across boto3 versions.
+    os.environ.setdefault("AWS_REQUEST_CHECKSUM_CALCULATION", "when_required")
+    os.environ.setdefault("AWS_RESPONSE_CHECKSUM_VALIDATION", "when_required")
+
     s3 = boto3.client(
         "s3",
         endpoint_url="{}://{}".format(
@@ -118,7 +125,9 @@ def main():
                         first = False
                     tbl = pa.Table.from_pandas(chunk, preserve_index=False)
                     if writer is None:
-                        writer = pq.ParquetWriter(local_path, tbl.schema)
+                        # zstd: smaller file than the default codec at similar
+                        # encode speed -> faster single PUT and faster downstream reads.
+                        writer = pq.ParquetWriter(local_path, tbl.schema, compression="zstd")
                         writer.write_table(tbl)
                     else:
                         # Pin schema so later chunks can't drift dtypes.
@@ -130,32 +139,40 @@ def main():
                             f"{time.monotonic() - t0:.1f}s")
                         next_log += 250_000
                 if writer is None:  # empty table -> header-only Parquet
-                    pd.DataFrame(columns=col_names).to_parquet(local_path, index=False)
+                    pd.DataFrame(columns=col_names).to_parquet(
+                        local_path, index=False, compression="zstd")
                 else:
                     writer.close()
                 size_mb = os.path.getsize(local_path) / 1e6
-                log(f"DB read+encode done: {rows_total:,} rows, {size_mb:.1f} MB "
-                    f"in {time.monotonic() - t0:.1f}s")
+                # Data is now fully pulled out of the DB; only the S3 upload remains.
+                log(f"DB transfer complete: pulled {rows_total:,} rows from DB "
+                    f"({size_mb:.1f} MB on disk) in {time.monotonic() - t0:.1f}s; uploading next")
 
-                # Phase 2: upload the seekable file with parallel multipart.
+                # Phase 2: upload the seekable file.
+                # This S3 endpoint doesn't support multipart uploads, so force a
+                # single PUT by raising the threshold above any realistic size.
+                # upload_file streams the body straight from disk, so even a large
+                # single PUT never buffers the whole table in memory.
                 t1 = time.monotonic()
                 transfer = TransferConfig(
-                    multipart_threshold=8 * 1024 * 1024,
-                    multipart_chunksize=8 * 1024 * 1024,
-                    max_concurrency=8,
-                    use_threads=True,
+                    multipart_threshold=5 * 1024 * 1024 * 1024,  # 5 GiB: never split
+                    use_threads=False,
                 )
                 log(f"Uploading {size_mb:.1f} MB -> s3://{bucket}/{first_key} ...")
                 s3.upload_file(local_path, bucket, first_key, Config=transfer)
                 dt = time.monotonic() - t1
                 log(f"Upload done in {dt:.1f}s ({size_mb / max(dt, 1e-3):.1f} MB/s)")
 
-                # Additional outputs share the same bytes: server-side copy,
-                # never re-stream the table.
+                # Additional outputs share the same bytes: single-request
+                # server-side copy (copy_object, not the managed multipart copy).
                 for f in out_files[1:]:
                     extra_key = s3_key_from_path(f"{base_path}/{f['name']}.parquet")
                     log(f"Copying to s3://{bucket}/{extra_key} ...")
-                    s3.copy({"Bucket": bucket, "Key": first_key}, bucket, extra_key)
+                    s3.copy_object(
+                        Bucket=bucket,
+                        CopySource={"Bucket": bucket, "Key": first_key},
+                        Key=extra_key,
+                    )
 
         print(json.dumps({
             "success": True,
