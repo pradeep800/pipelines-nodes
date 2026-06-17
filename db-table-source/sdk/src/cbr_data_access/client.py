@@ -551,7 +551,12 @@ class DataAccessClient:
             return written
 
         with self.connect() as conn:
-            streamed = conn.execution_options(stream_results=True)
+            # Fetch up to _CHUNK_SIZE rows per server round-trip rather than
+            # SQLAlchemy's ~1000-row default buffer; far fewer round-trips on a
+            # high-latency DB link, with peak memory still ~one chunk.
+            streamed = conn.execution_options(
+                stream_results=True, max_row_buffer=_CHUNK_SIZE
+            )
             for table, final_path in worklist:
                 relation = self._quote_relation(request, table)
                 sql = f"SELECT * FROM {relation}"  # noqa: S608
@@ -818,7 +823,14 @@ class DataAccessClient:
         def _stream() -> Iterator[pd.DataFrame]:
             try:
                 with self.connect() as conn:
-                    streamed = conn.execution_options(stream_results=True)
+                    # Fetch up to ``chunksize`` rows per server round-trip instead
+                    # of SQLAlchemy's ~1000-row default buffer. Over a high-latency
+                    # link to the DB this cuts the number of round-trips ~50x (the
+                    # dominant cost when streaming a large table); peak memory still
+                    # stays bounded to roughly one chunk.
+                    streamed = conn.execution_options(
+                        stream_results=True, max_row_buffer=chunksize
+                    )
                     yield from pd.read_sql_query(
                         statement, con=streamed, params=params, chunksize=chunksize
                     )

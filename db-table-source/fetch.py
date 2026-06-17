@@ -25,6 +25,10 @@ from cbr_data_access import DataAccessClient
 from cbr_data_access.exceptions import DataAccessError
 
 
+# Bump this on every code change so a run's logs prove which build is live.
+NODE_VERSION = "2026-06-18.1-streaming+maxrowbuffer+singleput"
+
+
 def log(msg):
     print(f"[DB-TABLE-SOURCE] {msg}", flush=True)
 
@@ -46,6 +50,7 @@ def s3_key_from_path(s3_path):
 
 
 def main():
+    log(f"version {NODE_VERSION}")
     ctx = parse_context()
     config   = ctx["config"]
     node     = ctx["node"]
@@ -98,8 +103,9 @@ def main():
                 log(f"Setting access request: {view_id}")
                 client.set_access(view_id)
 
-            # query_stream interpolates table_name into SQL. node.json's contract
-            # is a bare table name, so validate it as a plain identifier first.
+            # query() interpolates table_name into SQL via auto-qualification.
+            # node.json's contract is a bare table name, so validate it as a
+            # plain identifier first.
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table_name):
                 raise ValueError(f"Invalid table_name: {table_name!r}")
 
@@ -107,16 +113,16 @@ def main():
             first_key = s3_key_from_path(f"{base_path}/{out_files[0]['name']}.parquet")
 
             # Cheap LIMIT 0 probe so an empty table still yields a valid
-            # header-only Parquet (mirrors the SDK's own download probe).
+            # header-only Parquet.
             col_names = list(client.query(sql + " LIMIT 0").columns)
 
             with tempfile.TemporaryDirectory() as tmp:
                 local_path = os.path.join(tmp, f"{out_files[0]['name']}.parquet")
 
-                # Phase 1: stream the table to a local Parquet at full DB speed.
-                # Writing to disk (not a pipe) means the server-side cursor is
-                # never backpressured by the upload. Timing logs make the read
-                # cost visible (it was hidden before).
+                # Phase 1: stream the table to local Parquet via the SDK's
+                # server-side cursor. Memory stays bounded to one chunk no matter
+                # how many rows the table has (a 1M-row table never sits in RAM at
+                # once). Per-chunk timing makes the read cost observable.
                 t0 = time.monotonic()
                 rows_total, next_log, writer, first = 0, 250_000, None, True
                 for chunk in client.query_stream(sql):
@@ -125,12 +131,9 @@ def main():
                         first = False
                     tbl = pa.Table.from_pandas(chunk, preserve_index=False)
                     if writer is None:
-                        # zstd: smaller file than the default codec at similar
-                        # encode speed -> faster single PUT and faster downstream reads.
                         writer = pq.ParquetWriter(local_path, tbl.schema, compression="zstd")
                         writer.write_table(tbl)
                     else:
-                        # Pin schema so later chunks can't drift dtypes.
                         writer.write_table(tbl.cast(writer.schema))
                     rows_total += len(chunk)
                     if rows_total >= next_log:
@@ -144,7 +147,6 @@ def main():
                 else:
                     writer.close()
                 size_mb = os.path.getsize(local_path) / 1e6
-                # Data is now fully pulled out of the DB; only the S3 upload remains.
                 log(f"DB transfer complete: pulled {rows_total:,} rows from DB "
                     f"({size_mb:.1f} MB on disk) in {time.monotonic() - t0:.1f}s; uploading next")
 
@@ -174,8 +176,10 @@ def main():
                         Key=extra_key,
                     )
 
+        log(f"Completed OK (version {NODE_VERSION})")
         print(json.dumps({
             "success": True,
+            "version": NODE_VERSION,
             "nodeName": node["name"],
             "tableName": table_name,
             "outputs": [
