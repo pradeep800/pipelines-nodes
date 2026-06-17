@@ -10,10 +10,15 @@ nodes can consume it as an artifact.
 
 import json
 import os
+import re
 import sys
-import tempfile
+import threading
 
 import boto3
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+from boto3.s3.transfer import TransferConfig
 from botocore.client import Config
 from cbr_data_access import DataAccessClient
 from cbr_data_access.exceptions import DataAccessError
@@ -85,16 +90,70 @@ def main():
                 log(f"Setting access request: {view_id}")
                 client.set_access(view_id)
 
-            with tempfile.TemporaryDirectory() as tmp:
-                log(f"Downloading table '{table_name}'...")
-                local_path = client.download_table(table_name, tmp, file_format="parquet")
-                log(f"Downloaded -> {local_path}")
+            # query_stream interpolates table_name into SQL. node.json's contract
+            # is a bare table name, so validate it as a plain identifier first.
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table_name):
+                raise ValueError(f"Invalid table_name: {table_name!r}")
 
-                for f in out_files:
-                    s3_key = s3_key_from_path(f"{base_path}/{f['name']}.parquet")
-                    log(f"Uploading to s3://{bucket}/{s3_key} ...")
-                    s3.upload_file(str(local_path), bucket, s3_key)
-                    log("Upload complete")
+            sql = f"SELECT * FROM {table_name}"  # auto-qualified by query_stream
+            first_key = s3_key_from_path(f"{base_path}/{out_files[0]['name']}.parquet")
+
+            # Cheap LIMIT 0 probe so an empty table still yields a valid
+            # header-only Parquet (mirrors the SDK's own download probe).
+            col_names = list(client.query(sql + " LIMIT 0").columns)
+
+            # Stream the DB read and the S3 upload concurrently: a producer thread
+            # writes Parquet into an OS pipe while the main thread uploads the pipe
+            # straight to S3. No local-disk round-trip; the pipe's buffer applies
+            # backpressure so peak memory stays bounded.
+            producer_err = {}
+            r_fd, w_fd = os.pipe()
+
+            def produce():
+                try:
+                    with os.fdopen(w_fd, "wb") as wf:
+                        writer = None
+                        for chunk in client.query_stream(sql):
+                            tbl = pa.Table.from_pandas(chunk, preserve_index=False)
+                            if writer is None:
+                                writer = pq.ParquetWriter(wf, tbl.schema)
+                                writer.write_table(tbl)
+                            else:
+                                # Pin schema so later chunks can't drift dtypes.
+                                writer.write_table(tbl.cast(writer.schema))
+                        if writer is None:  # empty table -> header-only Parquet
+                            pd.DataFrame(columns=col_names).to_parquet(wf, index=False)
+                        else:
+                            writer.close()
+                except BaseException as e:  # closing wf signals EOF to the reader
+                    producer_err["e"] = e
+
+            log(f"Streaming table '{table_name}' -> s3://{bucket}/{first_key} ...")
+            producer = threading.Thread(target=produce, daemon=True)
+            producer.start()
+
+            transfer = TransferConfig(
+                multipart_threshold=16 * 1024 * 1024,
+                multipart_chunksize=16 * 1024 * 1024,
+                max_concurrency=8,
+                use_threads=True,
+            )
+            with os.fdopen(r_fd, "rb") as rf:
+                s3.upload_fileobj(rf, bucket, first_key, Config=transfer)
+
+            producer.join()
+            if "e" in producer_err:
+                # The upload may have finalized a truncated object; remove it.
+                s3.delete_object(Bucket=bucket, Key=first_key)
+                raise producer_err["e"]
+            log("Upload complete")
+
+            # Additional outputs share the same bytes: server-side copy, never
+            # re-stream the table.
+            for f in out_files[1:]:
+                extra_key = s3_key_from_path(f"{base_path}/{f['name']}.parquet")
+                log(f"Copying to s3://{bucket}/{extra_key} ...")
+                s3.copy({"Bucket": bucket, "Key": first_key}, bucket, extra_key)
 
         print(json.dumps({
             "success": True,
