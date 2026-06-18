@@ -57,6 +57,15 @@
       "unique": false,
       "placeholder": "e.g. a7f4d49a-ad3a-4a39-bc04-f97ce4d7c0f4",
       "order": 4
+    },
+    "row_limit": {
+      "type": "string",
+      "label": "Row Limit",
+      "description": "Maximum number of rows to fetch (adds a SQL LIMIT). Leave blank to fetch the full table.",
+      "required": false,
+      "unique": false,
+      "placeholder": "e.g. 100000",
+      "order": 5
     }
   },
   "hasOutput": true,

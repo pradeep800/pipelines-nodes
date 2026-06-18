@@ -16,9 +16,6 @@ import tempfile
 import time
 
 import boto3
-import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
 from boto3.s3.transfer import TransferConfig
 from botocore.client import Config
 from cbr_data_access import DataAccessClient
@@ -26,7 +23,7 @@ from cbr_data_access.exceptions import DataAccessError
 
 
 # Bump this on every code change so a run's logs prove which build is live.
-NODE_VERSION = "2026-06-18.1-streaming+maxrowbuffer+singleput"
+NODE_VERSION = "2026-06-18.3-query+rowlimit+snappy"
 
 
 def log(msg):
@@ -49,6 +46,19 @@ def s3_key_from_path(s3_path):
     return s3_path.replace("s3://", "").split("/", 1)[1]
 
 
+def parse_row_limit(raw):
+    """Validate the optional row cap. Blank/None/0 means no limit (full table)."""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise ValueError(f"Invalid row_limit: {raw!r} (must be a positive integer)")
+    if n < 0:
+        raise ValueError(f"row_limit must be >= 0, got {n}")
+    return n or None  # 0 => no limit
+
+
 def main():
     log(f"version {NODE_VERSION}")
     ctx = parse_context()
@@ -60,10 +70,12 @@ def main():
     password   = config["password"]
     table_name = config["table_name"].strip()
     view_id    = config.get("view_id", "").strip() or None
+    row_limit  = parse_row_limit(config.get("row_limit"))
     base_path  = output["basePath"]
     out_files  = output["files"]
 
-    log(f"Node: {node['name']} | Table: {table_name} | User: {username} | View ID: {view_id or 'auto'}")
+    log(f"Node: {node['name']} | Table: {table_name} | User: {username} | "
+        f"View ID: {view_id or 'auto'} | Limit: {row_limit or 'none'}")
 
     # Optional endpoint overrides (pass as pod env vars if needed)
     sdk_kwargs = {}
@@ -109,46 +121,38 @@ def main():
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table_name):
                 raise ValueError(f"Invalid table_name: {table_name!r}")
 
-            sql = f"SELECT * FROM {table_name}"  # auto-qualified by query_stream
+            sql = f"SELECT * FROM {table_name}"  # auto-qualified by the SDK
+            if row_limit:
+                sql += f" LIMIT {row_limit}"     # row_limit is a validated int
             first_key = s3_key_from_path(f"{base_path}/{out_files[0]['name']}.parquet")
 
-            # Cheap LIMIT 0 probe so an empty table still yields a valid
-            # header-only Parquet.
-            col_names = list(client.query(sql + " LIMIT 0").columns)
+            # Parquet codec. snappy is ~5-10x cheaper to encode than zstd and
+            # the output stays small. Override with PARQUET_COMPRESSION
+            # (e.g. "zstd", "none").
+            compression = os.environ.get("PARQUET_COMPRESSION", "snappy").strip().lower()
+            if compression in ("", "none"):
+                compression = None
+            log(f"Parquet compression: {compression or 'none'}")
 
             with tempfile.TemporaryDirectory() as tmp:
                 local_path = os.path.join(tmp, f"{out_files[0]['name']}.parquet")
 
-                # Phase 1: stream the table to local Parquet via the SDK's
-                # server-side cursor. Memory stays bounded to one chunk no matter
-                # how many rows the table has (a 1M-row table never sits in RAM at
-                # once). Per-chunk timing makes the read cost observable.
+                # Phase 1: fetch the (row-capped) result set as a single
+                # DataFrame, then encode Parquet once. The row limit keeps this
+                # memory-bounded, and read/encode are no longer interleaved, so
+                # the encode never back-pressures the DB read.
                 t0 = time.monotonic()
-                rows_total, next_log, writer, first = 0, 250_000, None, True
-                for chunk in client.query_stream(sql):
-                    if first:
-                        log(f"First DB chunk after {time.monotonic() - t0:.1f}s")
-                        first = False
-                    tbl = pa.Table.from_pandas(chunk, preserve_index=False)
-                    if writer is None:
-                        writer = pq.ParquetWriter(local_path, tbl.schema, compression="zstd")
-                        writer.write_table(tbl)
-                    else:
-                        writer.write_table(tbl.cast(writer.schema))
-                    rows_total += len(chunk)
-                    if rows_total >= next_log:
-                        log(f"  read {rows_total:,} rows, "
-                            f"{os.path.getsize(local_path) / 1e6:.1f} MB, "
-                            f"{time.monotonic() - t0:.1f}s")
-                        next_log += 250_000
-                if writer is None:  # empty table -> header-only Parquet
-                    pd.DataFrame(columns=col_names).to_parquet(
-                        local_path, index=False, compression="zstd")
-                else:
-                    writer.close()
+                log(f"Querying: {sql}")
+                df = client.query(sql)
+                log(f"DB read complete: {len(df):,} rows in "
+                    f"{time.monotonic() - t0:.1f}s; encoding Parquet")
+
+                t_enc = time.monotonic()
+                df.to_parquet(local_path, index=False, compression=compression)
                 size_mb = os.path.getsize(local_path) / 1e6
-                log(f"DB transfer complete: pulled {rows_total:,} rows from DB "
-                    f"({size_mb:.1f} MB on disk) in {time.monotonic() - t0:.1f}s; uploading next")
+                log(f"Parquet written: {len(df):,} rows, {size_mb:.1f} MB on disk in "
+                    f"{time.monotonic() - t_enc:.1f}s "
+                    f"(DB+encode total {time.monotonic() - t0:.1f}s); uploading next")
 
                 # Phase 2: upload the seekable file.
                 # This S3 endpoint doesn't support multipart uploads, so force a
