@@ -1,0 +1,35 @@
+{
+  "version": "1.0",
+  "nodeType": "processing",
+  "name": "Auth Check",
+  "shortDescription": "Prints the auth/credentials env injected into the Argo pod (debug only)",
+  "description": "A minimal debug node. It produces no artifacts and instead prints the auth environment Argo injects into the container (S3 access key, session token and related S3_* settings) to the execution logs, so you can verify credentials reach the pod. Debug/verification use only — do not leave in production pipelines since it logs secrets.",
+  "githubUrl": "https://github.com/<repo-link>",
+  "githubRef": "main",
+  "lucideIcon": "KeyRound",
+  "color": "#10b981",
+  "hasInput": false,
+  "inputDescription": "",
+  "config": {
+    "name": {
+      "type": "string",
+      "label": "Name",
+      "description": "Unique identifier for this auth check node in the pipeline",
+      "required": true,
+      "unique": true,
+      "placeholder": "e.g. auth_check",
+      "validation": {
+        "patternKey": "snake_case"
+      }
+    }
+  },
+  "hasOutput": false,
+  "outputDescription": "",
+  "outputFiles": [],
+  "implementation": {
+    "type": "container",
+    "entrypoint": "python main.py",
+    "dockerfilePath": "Dockerfile",
+    "dockerContext": "auth-check"
+  }
+}
