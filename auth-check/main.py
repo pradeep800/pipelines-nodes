@@ -2,12 +2,16 @@
 
 Contract:
 - Reads NODE_CONTEXT (JSON env var) for node identity.
-- Produces no artifacts. Instead it prints the auth/credentials env that the
-  platform injects into the Argo pod, so you can verify they arrive.
+- Produces no artifacts. Instead it prints the Keycloak auth the platform
+  injects into the Argo pod, so you can verify the user's tokens arrive:
+    * KEYCLOAK_ACCESS_TOKEN  - the caller's current access token
+    * KEYCLOAK_REFRESH_TOKEN - the caller's refresh token
+    * KEYCLOAK_TOKEN_URL     - endpoint to mint a new access token from the
+                               refresh token (grant_type=refresh_token)
 - Prints a final JSON status to stdout; exits 0 on success, 1 on failure.
 
-DEBUG/VERIFICATION ONLY: this logs secrets (access key + session token) which
-are archived and shown in the execution log UI. Do not leave in real pipelines.
+DEBUG/VERIFICATION ONLY: this logs secrets (access + refresh tokens) which are
+archived and shown in the execution log UI. Do not leave in real pipelines.
 """
 
 import json
@@ -16,16 +20,12 @@ import sys
 
 NODE_PREFIX = "[AUTH CHECK]"
 
-# Auth / credentials env the workflow builder injects into every node pod
+# Keycloak auth the workflow builder injects into every node pod
 # (see backend/src/argo/workflow-builder.ts buildCustomNodeTemplates).
-AUTH_ENV_VARS = [
-    "S3_ENDPOINT",
-    "S3_ACCESS_KEY",
-    "S3_SECRET_KEY",
-    "S3_SESSION_TOKEN",
-    "S3_BUCKET",
-    "S3_USE_SSL",
-    "S3_REGION",
+KEYCLOAK_ENV_VARS = [
+    "KEYCLOAK_ACCESS_TOKEN",
+    "KEYCLOAK_REFRESH_TOKEN",
+    "KEYCLOAK_TOKEN_URL",
 ]
 
 
@@ -42,9 +42,9 @@ def main() -> None:
     node_name = ctx["node"]["name"]
 
     log(f"Starting node '{node_name}'")
-    log("Auth env injected into this pod:")
+    log("Keycloak auth injected into this pod:")
 
-    for var in AUTH_ENV_VARS:
+    for var in KEYCLOAK_ENV_VARS:
         value = os.environ.get(var)
         if value is None:
             log(f"  {var}: <not set>")
@@ -52,6 +52,15 @@ def main() -> None:
             log(f"  {var}: <empty>")
         else:
             log(f"  {var}: {value}")
+
+    # Show how to refresh the access token using the refresh token + token URL.
+    token_url = os.environ.get("KEYCLOAK_TOKEN_URL")
+    refresh_token = os.environ.get("KEYCLOAK_REFRESH_TOKEN")
+    if token_url and refresh_token:
+        log(
+            "To get a new access token, POST to KEYCLOAK_TOKEN_URL with "
+            "grant_type=refresh_token&client_id=<client>&refresh_token=$KEYCLOAK_REFRESH_TOKEN"
+        )
 
     log("Done")
     print(json.dumps({"success": True, "nodeName": node_name}))
