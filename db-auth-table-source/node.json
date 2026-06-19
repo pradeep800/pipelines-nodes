@@ -1,8 +1,8 @@
 {
   "version": "1.0",
   "nodeType": "processing",
-  "name": "DB Table Source (Auth)",
-  "shortDescription": "Fetch a table from the CBR data platform using the caller's signed-in session",
+  "name": "DB Table Source",
+  "shortDescription": "Fetch a table from the CBR data ",
   "description": "Authenticates using the caller's Keycloak tokens injected by Argo (no credentials stored in the pipeline), downloads a table from your approved access request using the cbr-data-access SDK, and stores the result in MinIO as Parquet for downstream nodes.",
   "githubUrl": "https://github.com/<repo-link>",
   "githubRef": "main",
