@@ -69,6 +69,6 @@
     "type": "container",
     "entrypoint": "python fetch.py",
     "dockerfilePath": "Dockerfile",
-    "dockerContext": "db-auth-table-source"
+    "dockerContext": "cbr-table-source"
   }
 }
