@@ -32,7 +32,7 @@ from cbr_data_access.exceptions import AuthenticationError, DataAccessError
 KEYCLOAK_CLIENT_ID = os.environ.get("KEYCLOAK_CLIENT_ID", "angular-client")
 
 # Bump this on every code change so a run's logs prove which build is live.
-NODE_VERSION = "2026-06-18.4-argo-token-auth"
+NODE_VERSION = "2026-06-30.1-omop-contract-keys"
 
 
 def log(msg):
@@ -68,6 +68,23 @@ def parse_row_limit(raw):
     if n < 0:
         raise ValueError(f"row_limit must be >= 0, got {n}")
     return n or None  # 0 => no limit
+
+
+def resolve_request_id(config):
+    """Extract the access request id chosen in the editor.
+
+    The system "OMOP Table Source" contract stores the editor selection under
+    `access_request` as a composite `{ "request_id": ..., "use_case": ... }`
+    (see the access-request field type). The Argo step needs the request id,
+    not the use case. Falls back to the legacy bare `view_id` key.
+    """
+    access_request = config.get("access_request")
+    if isinstance(access_request, dict):
+        request_id = (access_request.get("request_id") or "").strip()
+        if request_id:
+            return request_id
+    # Legacy / manual config: a bare access-request UUID.
+    return (config.get("view_id") or "").strip() or None
 
 
 def _refresh_via_argo_token(client, token_url, timeout):
@@ -130,8 +147,12 @@ def main():
     node     = ctx["node"]
     output   = ctx["output"]
 
-    table_name = config["table_name"].strip()
-    view_id    = config.get("view_id", "").strip() or None
+    # The system "OMOP Table Source" contract sends `omop_table`; accept the
+    # legacy `table_name` key too so manually-wired configs keep working.
+    table_name = (config.get("omop_table") or config.get("table_name") or "").strip()
+    if not table_name:
+        raise ValueError("omop_table is required (select an OMOP table in the editor)")
+    view_id    = resolve_request_id(config)
     row_limit  = parse_row_limit(config.get("row_limit"))
     out_files  = output["files"]
 
