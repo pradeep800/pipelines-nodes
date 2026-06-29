@@ -67,7 +67,7 @@
   ],
   "implementation": {
     "type": "container",
-    "entrypoint": "python fetch.py",
+    "entrypoint": "python transform.py",
     "dockerfilePath": "Dockerfile",
     "dockerContext": "cbr-table-source"
   }

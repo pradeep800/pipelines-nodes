@@ -11,6 +11,6 @@ RUN pip install --no-cache-dir uv
 COPY sdk/ ./sdk/
 RUN uv pip install --system --no-cache ./sdk/ boto3
 
-COPY fetch.py ./
+COPY transform.py ./
 
-CMD ["python", "fetch.py"]
+CMD ["python", "transform.py"]
