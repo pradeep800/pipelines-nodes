@@ -50,9 +50,11 @@ def parse_context():
     return json.loads(raw)
 
 
-def s3_key_from_path(s3_path):
-    # s3://bucket/some/key  →  some/key
-    return s3_path.replace("s3://", "").split("/", 1)[1]
+def split_s3(s3_path):
+    # s3://bucket/some/key  →  ("bucket", "some/key")
+    rest = s3_path[len("s3://"):] if s3_path.startswith("s3://") else s3_path
+    bucket, _, key = rest.partition("/")
+    return bucket, key
 
 
 def parse_row_limit(raw):
@@ -131,7 +133,6 @@ def main():
     table_name = config["table_name"].strip()
     view_id    = config.get("view_id", "").strip() or None
     row_limit  = parse_row_limit(config.get("row_limit"))
-    base_path  = output["basePath"]
     out_files  = output["files"]
 
     log(f"Node: {node['name']} | Table: {table_name} | "
@@ -151,19 +152,22 @@ def main():
     os.environ.setdefault("AWS_REQUEST_CHECKSUM_CALCULATION", "when_required")
     os.environ.setdefault("AWS_RESPONSE_CHECKSUM_VALIDATION", "when_required")
 
+    # This node only writes its result, so it uses the artifact bucket (the
+    # read+write output bucket). The platform injects ARTIFACT_S3_* — the old
+    # single-bucket S3_* vars are no longer set.
+    endpoint = os.environ["ARTIFACT_S3_ENDPOINT"]
+    use_ssl = os.environ.get("ARTIFACT_S3_USE_SSL", "false").lower() == "true"
+    if "://" not in endpoint:
+        endpoint = ("https://" if use_ssl else "http://") + endpoint
     s3 = boto3.client(
         "s3",
-        endpoint_url="{}://{}".format(
-            "https" if os.environ.get("S3_USE_SSL", "false").lower() == "true" else "http",
-            os.environ.get("S3_ENDPOINT", "minio:9000"),
-        ),
-        aws_access_key_id=os.environ.get("S3_ACCESS_KEY", ""),
-        aws_secret_access_key=os.environ.get("S3_SECRET_KEY", ""),
-        aws_session_token=os.environ.get("S3_SESSION_TOKEN") or None,
-        region_name=os.environ.get("S3_REGION", "us-east-1"),
+        endpoint_url=endpoint,
+        aws_access_key_id=os.environ["ARTIFACT_S3_ACCESS_KEY"],
+        aws_secret_access_key=os.environ["ARTIFACT_S3_SECRET_KEY"],
+        aws_session_token=os.environ.get("ARTIFACT_S3_SESSION_TOKEN") or None,
+        region_name=os.environ.get("ARTIFACT_S3_REGION", "us-east-1"),
         config=Config(signature_version="s3v4"),
     )
-    bucket = os.environ.get("S3_BUCKET", "data-pipeline")
 
     try:
         with build_authenticated_client(**sdk_kwargs) as client:
@@ -182,7 +186,8 @@ def main():
             sql = f"SELECT * FROM {table_name}"  # auto-qualified by the SDK
             if row_limit:
                 sql += f" LIMIT {row_limit}"     # row_limit is a validated int
-            first_key = s3_key_from_path(f"{base_path}/{out_files[0]['name']}.parquet")
+            # Write to the exact path the platform assigned (always artifact bucket).
+            bucket, first_key = split_s3(out_files[0]["path"])
 
             # Parquet codec. snappy is ~5-10x cheaper to encode than zstd and
             # the output stays small. Override with PARQUET_COMPRESSION
@@ -230,7 +235,7 @@ def main():
                 # Additional outputs share the same bytes: single-request
                 # server-side copy (copy_object, not the managed multipart copy).
                 for f in out_files[1:]:
-                    extra_key = s3_key_from_path(f"{base_path}/{f['name']}.parquet")
+                    _, extra_key = split_s3(f["path"])
                     log(f"Copying to s3://{bucket}/{extra_key} ...")
                     s3.copy_object(
                         Bucket=bucket,
@@ -245,7 +250,7 @@ def main():
             "nodeName": node["name"],
             "tableName": table_name,
             "outputs": [
-                {"name": f["name"], "path": f"{base_path}/{f['name']}.parquet"}
+                {"name": f["name"], "path": f["path"]}
                 for f in out_files
             ],
         }))
