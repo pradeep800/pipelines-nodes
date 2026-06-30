@@ -6,7 +6,9 @@ Output : result.parquet with PCA coords + cluster labels + clinical scores
 
 Runtime contract:
   - Reads NODE_CONTEXT (JSON env var) for inputs/outputs/config
-  - Reads S3_* env vars for MinIO/S3 access
+  - Reads two S3 credential sets (same contract as the transformer node):
+      INPUT_S3_*     - upload bucket (user source files), read-only
+      ARTIFACT_S3_*  - artifact bucket (workflow outputs), read+write
   - Writes output to the exact path in output.files[0].path
   - Prints a JSON status line to stdout; exits 0 on success / 1 on failure
 """
@@ -35,23 +37,33 @@ def log_error(msg):
     print(f"{NODE_PREFIX} ERROR: {msg}", file=sys.stderr, flush=True)
 
 
-def setup_duckdb_s3(conn):
-    endpoint = os.environ.get("S3_ENDPOINT", "minio:9000")
-    use_ssl = os.environ.get("S3_USE_SSL", "false").lower() == "true"
-    session_token = os.environ.get("S3_SESSION_TOKEN", "")
+def create_s3_secret(conn, name: str, prefix: str, bucket: str):
+    """Create a DuckDB S3 secret scoped to one bucket from {prefix}_S3_* env vars.
+
+    Two secrets (INPUT + ARTIFACT) are created; DuckDB picks the matching one per
+    query from the path's bucket, so reads from the read-only upload bucket and
+    writes to the read+write artifact bucket each use the right credentials.
+    """
+    session_token = os.environ.get(f"{prefix}_S3_SESSION_TOKEN", "")
     token_clause = f",\n        SESSION_TOKEN '{session_token}'" if session_token else ""
-    conn.load_extension("httpfs")
     conn.execute(f"""
-        CREATE SECRET minio_secret (
+        CREATE SECRET {name} (
             TYPE S3,
-            KEY_ID '{os.environ["S3_ACCESS_KEY"]}',
-            SECRET '{os.environ["S3_SECRET_KEY"]}',
-            ENDPOINT '{endpoint}',
+            KEY_ID '{os.environ[f"{prefix}_S3_ACCESS_KEY"]}',
+            SECRET '{os.environ[f"{prefix}_S3_SECRET_KEY"]}',
+            ENDPOINT '{os.environ[f"{prefix}_S3_ENDPOINT"]}',
+            SCOPE 's3://{bucket}',
             URL_STYLE 'path',
-            USE_SSL {str(use_ssl).lower()},
-            REGION '{os.environ.get("S3_REGION", "us-east-1")}'{token_clause}
+            USE_SSL {os.environ.get(f"{prefix}_S3_USE_SSL", "false").lower()},
+            REGION '{os.environ.get(f"{prefix}_S3_REGION", "us-east-1")}'{token_clause}
         )
     """)
+
+
+def setup_duckdb_s3(conn):
+    conn.load_extension("httpfs")
+    create_s3_secret(conn, "input_secret", "INPUT", os.environ["INPUT_S3_BUCKET"])
+    create_s3_secret(conn, "artifact_secret", "ARTIFACT", os.environ["ARTIFACT_S3_BUCKET"])
 
 
 def _build_clusterer(algorithm: str, n_clusters: int):
