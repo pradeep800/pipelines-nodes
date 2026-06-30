@@ -3,8 +3,13 @@
 STL Merger - Custom Node Container
 
 Scaffold container for an STL merger node. It follows the same NODE_CONTEXT
-pattern as the SQL transformer image, but does not require upstream inputs.
+pattern as the transformer image, but does not require upstream inputs.
 For now it writes a minimal valid STL artifact to the resolved output path.
+
+This node has no S3 inputs, so it only needs the artifact bucket's
+credentials:
+  ARTIFACT_S3_*  - artifact bucket (workflow outputs), read+write
+Writes to the exact paths the platform assigns in output.files[*].path.
 """
 
 import json
@@ -38,37 +43,29 @@ def validate_context(ctx: dict) -> None:
     if not ctx.get("node", {}).get("name"):
         raise ValueError("node.name is required in NODE_CONTEXT")
 
-    if not ctx.get("output", {}).get("basePath"):
-        raise ValueError("output.basePath is required in NODE_CONTEXT")
-
     output_files = ctx.get("output", {}).get("files", [])
     if not output_files:
         raise ValueError("output.files is required in NODE_CONTEXT")
 
 
 def create_s3_client():
-    use_ssl = os.environ.get("S3_USE_SSL", "false").lower() == "true"
-    endpoint = os.environ.get("S3_ENDPOINT", "minio:9000")
+    use_ssl = os.environ.get("ARTIFACT_S3_USE_SSL", "false").lower() == "true"
+    endpoint = os.environ["ARTIFACT_S3_ENDPOINT"]
     endpoint_url = f"{'https' if use_ssl else 'http'}://{endpoint}"
 
     client_kwargs = {
         "service_name": "s3",
         "endpoint_url": endpoint_url,
-        "aws_access_key_id": os.environ.get("S3_ACCESS_KEY", ""),
-        "aws_secret_access_key": os.environ.get("S3_SECRET_KEY", ""),
-        "region_name": os.environ.get("S3_REGION", "us-east-1"),
+        "aws_access_key_id": os.environ["ARTIFACT_S3_ACCESS_KEY"],
+        "aws_secret_access_key": os.environ["ARTIFACT_S3_SECRET_KEY"],
+        "region_name": os.environ.get("ARTIFACT_S3_REGION", "us-east-1"),
     }
 
-    session_token = os.environ.get("S3_SESSION_TOKEN", "")
+    session_token = os.environ.get("ARTIFACT_S3_SESSION_TOKEN", "")
     if session_token:
         client_kwargs["aws_session_token"] = session_token
 
     return boto3.client(**client_kwargs)
-
-
-def build_output_path(base_path: str, output_name: str, output_format: str) -> str:
-    extension = output_format.lower() if output_format else "stl"
-    return f"{base_path}/{output_name}.{extension}"
 
 
 def parse_s3_uri(uri: str) -> tuple[str, str]:
@@ -102,7 +99,6 @@ def main() -> None:
     output = ctx["output"]
     node_name = node["name"]
     node_slug = node.get("slug", "stl-merger")
-    base_path = output["basePath"]
     output_files = output["files"]
 
     log("=== STL Merger Node ===")
@@ -117,7 +113,7 @@ def main() -> None:
         for output_file in output_files:
             output_name = output_file.get("name", "merged_model")
             output_format = output_file.get("format", "stl")
-            output_path = build_output_path(base_path, output_name, output_format)
+            output_path = output_file["path"]
 
             if output_format.lower() != "stl":
                 raise ValueError(f"Unsupported output format for STL merger: {output_format}")

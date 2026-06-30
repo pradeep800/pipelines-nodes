@@ -12,6 +12,11 @@ for a username/password in the node config: Argo injects KEYCLOAK_ACCESS_TOKEN
 / KEYCLOAK_REFRESH_TOKEN / KEYCLOAK_TOKEN_URL into every node pod (see the
 "Auth Check" node), so this node seeds the SDK client with that access token
 directly and refreshes it via the refresh-token grant if it expires mid-run.
+
+This node has no S3 inputs (the table comes from the data-access server via
+the SDK), so it only needs the artifact bucket's credentials:
+  ARTIFACT_S3_*  - artifact bucket (workflow outputs), read+write
+Writes to the exact paths the platform assigns in output.files[*].path.
 """
 
 import json
@@ -32,7 +37,7 @@ from cbr_data_access.exceptions import AuthenticationError, DataAccessError
 KEYCLOAK_CLIENT_ID = os.environ.get("KEYCLOAK_CLIENT_ID", "angular-client")
 
 # Bump this on every code change so a run's logs prove which build is live.
-NODE_VERSION = "2026-06-18.4-argo-token-auth"
+NODE_VERSION = "2026-06-30.5-two-bucket-s3"
 
 
 def log(msg):
@@ -131,7 +136,6 @@ def main():
     table_name = config["table_name"].strip()
     view_id    = config.get("view_id", "").strip() or None
     row_limit  = parse_row_limit(config.get("row_limit"))
-    base_path  = output["basePath"]
     out_files  = output["files"]
 
     log(f"Node: {node['name']} | Table: {table_name} | "
@@ -154,16 +158,16 @@ def main():
     s3 = boto3.client(
         "s3",
         endpoint_url="{}://{}".format(
-            "https" if os.environ.get("S3_USE_SSL", "false").lower() == "true" else "http",
-            os.environ.get("S3_ENDPOINT", "minio:9000"),
+            "https" if os.environ.get("ARTIFACT_S3_USE_SSL", "false").lower() == "true" else "http",
+            os.environ["ARTIFACT_S3_ENDPOINT"],
         ),
-        aws_access_key_id=os.environ.get("S3_ACCESS_KEY", ""),
-        aws_secret_access_key=os.environ.get("S3_SECRET_KEY", ""),
-        aws_session_token=os.environ.get("S3_SESSION_TOKEN") or None,
-        region_name=os.environ.get("S3_REGION", "us-east-1"),
+        aws_access_key_id=os.environ["ARTIFACT_S3_ACCESS_KEY"],
+        aws_secret_access_key=os.environ["ARTIFACT_S3_SECRET_KEY"],
+        aws_session_token=os.environ.get("ARTIFACT_S3_SESSION_TOKEN") or None,
+        region_name=os.environ.get("ARTIFACT_S3_REGION", "us-east-1"),
         config=Config(signature_version="s3v4"),
     )
-    bucket = os.environ.get("S3_BUCKET", "data-pipeline")
+    bucket = os.environ["ARTIFACT_S3_BUCKET"]
 
     try:
         with build_authenticated_client(**sdk_kwargs) as client:
@@ -182,7 +186,7 @@ def main():
             sql = f"SELECT * FROM {table_name}"  # auto-qualified by the SDK
             if row_limit:
                 sql += f" LIMIT {row_limit}"     # row_limit is a validated int
-            first_key = s3_key_from_path(f"{base_path}/{out_files[0]['name']}.parquet")
+            first_key = s3_key_from_path(out_files[0]["path"])
 
             # Parquet codec. snappy is ~5-10x cheaper to encode than zstd and
             # the output stays small. Override with PARQUET_COMPRESSION
@@ -230,7 +234,7 @@ def main():
                 # Additional outputs share the same bytes: single-request
                 # server-side copy (copy_object, not the managed multipart copy).
                 for f in out_files[1:]:
-                    extra_key = s3_key_from_path(f"{base_path}/{f['name']}.parquet")
+                    extra_key = s3_key_from_path(f["path"])
                     log(f"Copying to s3://{bucket}/{extra_key} ...")
                     s3.copy_object(
                         Bucket=bucket,
@@ -245,7 +249,7 @@ def main():
             "nodeName": node["name"],
             "tableName": table_name,
             "outputs": [
-                {"name": f["name"], "path": f"{base_path}/{f['name']}.parquet"}
+                {"name": f["name"], "path": f["path"]}
                 for f in out_files
             ],
         }))

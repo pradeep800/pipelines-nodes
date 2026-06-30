@@ -4,7 +4,12 @@ Feature Scaler Node
 Scales numeric columns using StandardScaler or MinMaxScaler from scikit-learn.
 
 Reads NODE_CONTEXT from environment (same contract as all other nodes).
-Reads input parquet from MinIO via boto3, writes scaled parquet back to MinIO.
+Reads input parquet from S3 via boto3, writes scaled parquet back to S3.
+
+Reads two S3 credential sets (same contract as the transformer node):
+  INPUT_S3_*     - upload bucket (user source files), read-only
+  ARTIFACT_S3_*  - artifact bucket (workflow outputs), read+write
+Writes output to the exact path the platform assigns in output.files[0].path.
 """
 
 import os
@@ -26,18 +31,19 @@ def log_error(msg):
     print(f"[SCALER ERROR] {msg}", file=sys.stderr, flush=True)
 
 
-def get_s3_client():
-    session_token = os.environ.get("S3_SESSION_TOKEN") or None
-    use_ssl = os.environ.get("S3_USE_SSL", "false").lower() == "true"
-    endpoint = os.environ["S3_ENDPOINT"]
+def make_s3_client(prefix: str):
+    """Build a boto3 S3 client from {prefix}_S3_* env vars (INPUT or ARTIFACT)."""
+    use_ssl = os.environ.get(f"{prefix}_S3_USE_SSL", "false").lower() == "true"
+    endpoint = os.environ[f"{prefix}_S3_ENDPOINT"]
     scheme = "https" if use_ssl else "http"
 
     return boto3.client(
         "s3",
         endpoint_url=f"{scheme}://{endpoint}",
-        aws_access_key_id=os.environ["S3_ACCESS_KEY"],
-        aws_secret_access_key=os.environ["S3_SECRET_KEY"],
-        aws_session_token=session_token,
+        aws_access_key_id=os.environ[f"{prefix}_S3_ACCESS_KEY"],
+        aws_secret_access_key=os.environ[f"{prefix}_S3_SECRET_KEY"],
+        aws_session_token=os.environ.get(f"{prefix}_S3_SESSION_TOKEN") or None,
+        region_name=os.environ.get(f"{prefix}_S3_REGION", "us-east-1"),
         config=Config(signature_version="s3v4"),
     )
 
@@ -75,7 +81,6 @@ def main():
 
     method     = config.get("method", "standard")
     cols_raw   = config.get("columns", "").strip()
-    base_path  = output["basePath"]
 
     log(f"=== Feature Scaler: {node['name']} ===")
     log(f"Method: {method}")
@@ -85,10 +90,19 @@ def main():
         log_error("No inputs provided")
         sys.exit(1)
 
-    s3 = get_s3_client()
+    # Inputs may live in either bucket; outputs always go to the artifact
+    # bucket. Pick the client per path by the bucket in its s3:// URI.
+    input_client = make_s3_client("INPUT")
+    artifact_client = make_s3_client("ARTIFACT")
+    artifact_bucket = os.environ["ARTIFACT_S3_BUCKET"]
+
+    def client_for(s3_path):
+        bucket, _ = s3_split(s3_path)
+        return artifact_client if bucket == artifact_bucket else input_client
 
     # ── Read input ──────────────────────────────────────────────────
-    df = read_parquet(s3, inputs[0]["output"]["path"])
+    input_path = inputs[0]["output"]["path"]
+    df = read_parquet(client_for(input_path), input_path)
     log(f"Loaded {len(df)} rows, {len(df.columns)} columns: {list(df.columns)}")
 
     # ── Resolve columns to scale ────────────────────────────────────
@@ -117,8 +131,8 @@ def main():
     log(f"Scaled {len(cols)} columns: {cols}")
 
     # ── Write output ────────────────────────────────────────────────
-    out_path = f"{base_path}/result.parquet"
-    write_parquet(s3, df, out_path)
+    out_path = output["files"][0]["path"]
+    write_parquet(artifact_client, df, out_path)
 
     print(json.dumps({
         "success": True,

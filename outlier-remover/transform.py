@@ -6,6 +6,11 @@ Removes rows containing outlier values using IQR, Z-Score, or Isolation Forest.
 IQR:              flags rows where any checked column falls outside Q1-1.5*IQR .. Q3+1.5*IQR
 Z-Score:          flags rows where any checked column is more than N std deviations from mean
 Isolation Forest: sklearn ML model that scores each row — useful for catching multi-column outliers
+
+Reads two S3 credential sets (same contract as the transformer node):
+  INPUT_S3_*     - upload bucket (user source files), read-only
+  ARTIFACT_S3_*  - artifact bucket (workflow outputs), read+write
+Writes output to the exact path the platform assigns in output.files[0].path.
 """
 
 import os
@@ -28,16 +33,17 @@ def log_error(msg):
     print(f"[OUTLIER ERROR] {msg}", file=sys.stderr, flush=True)
 
 
-def get_s3_client():
-    session_token = os.environ.get("S3_SESSION_TOKEN") or None
-    use_ssl = os.environ.get("S3_USE_SSL", "false").lower() == "true"
+def make_s3_client(prefix: str):
+    """Build a boto3 S3 client from {prefix}_S3_* env vars (INPUT or ARTIFACT)."""
+    use_ssl = os.environ.get(f"{prefix}_S3_USE_SSL", "false").lower() == "true"
     scheme = "https" if use_ssl else "http"
     return boto3.client(
         "s3",
-        endpoint_url=f"{scheme}://{os.environ['S3_ENDPOINT']}",
-        aws_access_key_id=os.environ["S3_ACCESS_KEY"],
-        aws_secret_access_key=os.environ["S3_SECRET_KEY"],
-        aws_session_token=session_token,
+        endpoint_url=f"{scheme}://{os.environ[f'{prefix}_S3_ENDPOINT']}",
+        aws_access_key_id=os.environ[f"{prefix}_S3_ACCESS_KEY"],
+        aws_secret_access_key=os.environ[f"{prefix}_S3_SECRET_KEY"],
+        aws_session_token=os.environ.get(f"{prefix}_S3_SESSION_TOKEN") or None,
+        region_name=os.environ.get(f"{prefix}_S3_REGION", "us-east-1"),
         config=Config(signature_version="s3v4"),
     )
 
@@ -109,7 +115,6 @@ def main():
     method     = config.get("method", "iqr")
     cols_raw   = config.get("columns", "").strip()
     threshold  = config.get("threshold", "").strip()
-    base_path  = output["basePath"]
 
     log(f"=== Outlier Remover: {node['name']} ===")
     log(f"Method: {method}")
@@ -118,8 +123,18 @@ def main():
         log_error("No inputs provided")
         sys.exit(1)
 
-    s3 = get_s3_client()
-    df = read_parquet(s3, inputs[0]["output"]["path"])
+    # Inputs may live in either bucket; outputs always go to the artifact
+    # bucket. Pick the client per path by the bucket in its s3:// URI.
+    input_client = make_s3_client("INPUT")
+    artifact_client = make_s3_client("ARTIFACT")
+    artifact_bucket = os.environ["ARTIFACT_S3_BUCKET"]
+
+    def client_for(s3_path):
+        bucket, _ = s3_split(s3_path)
+        return artifact_client if bucket == artifact_bucket else input_client
+
+    input_path = inputs[0]["output"]["path"]
+    df = read_parquet(client_for(input_path), input_path)
     rows_before = len(df)
     log(f"Loaded {rows_before} rows, {len(df.columns)} columns")
 
@@ -168,8 +183,8 @@ def main():
     log(f"Removed {rows_removed} outlier rows ({rows_removed/rows_before*100:.1f}%)")
     log(f"Remaining: {rows_after} rows")
 
-    out_path = f"{base_path}/result.parquet"
-    write_parquet(s3, df, out_path)
+    out_path = output["files"][0]["path"]
+    write_parquet(artifact_client, df, out_path)
 
     print(json.dumps({
         "success": True,

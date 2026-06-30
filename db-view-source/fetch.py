@@ -4,7 +4,12 @@ DB View Source - Custom Node Container
 
 Uses the cbr-data-access SDK to authenticate with Keycloak, download a
 specified view from the CBR data-access server as Parquet, and upload it
-to MinIO so downstream pipeline nodes can consume it as an artifact.
+to S3 so downstream pipeline nodes can consume it as an artifact.
+
+This node has no S3 inputs (the view comes from the data-access server via
+the SDK), so it only needs the artifact bucket's credentials:
+  ARTIFACT_S3_*  - artifact bucket (workflow outputs), read+write
+Writes to the exact paths the platform assigns in output.files[*].path.
 """
 
 import json
@@ -47,7 +52,6 @@ def main():
     username  = config["username"]
     password  = config["password"]
     view_name = config["view_name"]
-    base_path = output["basePath"]
     out_files = output["files"]
 
     log(f"Node: {node['name']} | View: {view_name} | User: {username}")
@@ -62,16 +66,16 @@ def main():
     s3 = boto3.client(
         "s3",
         endpoint_url="{}://{}".format(
-            "https" if os.environ.get("S3_USE_SSL", "false").lower() == "true" else "http",
-            os.environ.get("S3_ENDPOINT", "minio:9000"),
+            "https" if os.environ.get("ARTIFACT_S3_USE_SSL", "false").lower() == "true" else "http",
+            os.environ["ARTIFACT_S3_ENDPOINT"],
         ),
-        aws_access_key_id=os.environ.get("S3_ACCESS_KEY", ""),
-        aws_secret_access_key=os.environ.get("S3_SECRET_KEY", ""),
-        aws_session_token=os.environ.get("S3_SESSION_TOKEN") or None,
-        region_name=os.environ.get("S3_REGION", "us-east-1"),
+        aws_access_key_id=os.environ["ARTIFACT_S3_ACCESS_KEY"],
+        aws_secret_access_key=os.environ["ARTIFACT_S3_SECRET_KEY"],
+        aws_session_token=os.environ.get("ARTIFACT_S3_SESSION_TOKEN") or None,
+        region_name=os.environ.get("ARTIFACT_S3_REGION", "us-east-1"),
         config=Config(signature_version="s3v4"),
     )
-    bucket = os.environ.get("S3_BUCKET", "data-pipeline")
+    bucket = os.environ["ARTIFACT_S3_BUCKET"]
 
     try:
         with DataAccessClient(username=username, password=password, **sdk_kwargs) as client:
@@ -85,7 +89,7 @@ def main():
                 log(f"Downloaded → {local_path}")
 
                 for f in out_files:
-                    s3_key = s3_key_from_path(f"{base_path}/{f['name']}.parquet")
+                    s3_key = s3_key_from_path(f["path"])
                     log(f"Uploading to s3://{bucket}/{s3_key} ...")
                     s3.upload_file(str(local_path), bucket, s3_key)
                     log("Upload complete")
@@ -95,7 +99,7 @@ def main():
             "nodeName": node["name"],
             "viewName": view_name,
             "outputs": [
-                {"name": f["name"], "path": f"{base_path}/{f['name']}.parquet"}
+                {"name": f["name"], "path": f["path"]}
                 for f in out_files
             ],
         }))

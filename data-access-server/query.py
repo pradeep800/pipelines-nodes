@@ -21,14 +21,16 @@ Environment Variables:
                          "config": { "sql": "SELECT * FROM ...", ... }
                        }
 
-Resource Environment Variables (always injected for all nodes):
-  S3_ENDPOINT        - MinIO endpoint (e.g., minio:9000)
-  S3_ACCESS_KEY      - S3 access key (STS temporary credential)
-  S3_SECRET_KEY      - S3 secret key (STS temporary credential)
-  S3_SESSION_TOKEN   - S3 session token (STS temporary credential)
-  S3_BUCKET          - MinIO bucket name (default: data-pipeline)
-  S3_USE_SSL         - Use SSL for S3 (default: false)
-  S3_REGION          - S3 region (default: us-east-1)
+Resource Environment Variables (two buckets, one credential set each):
+  INPUT_S3_*         - Upload bucket (user source files), read-only
+  ARTIFACT_S3_*      - Artifact bucket (workflow outputs), read+write
+    *_ENDPOINT       - S3 endpoint (host:port, no scheme)
+    *_ACCESS_KEY     - STS access key
+    *_SECRET_KEY     - STS secret key
+    *_SESSION_TOKEN  - STS session token (optional)
+    *_BUCKET         - Bucket name
+    *_USE_SSL        - Use SSL for S3 (default: false)
+    *_REGION         - S3 region (default: us-east-1)
 """
 
 import os
@@ -50,11 +52,6 @@ def sanitize_table_name(name: str) -> str:
     return "".join(c if c.isalnum() or c == "_" else "_" for c in name)
 
 
-def get_extension(format: str) -> str:
-    """Get file extension for a format."""
-    return {"parquet": "parquet", "csv": "csv", "json": "json"}.get(format.lower(), "parquet")
-
-
 def parse_node_context() -> dict:
     """Parse NODE_CONTEXT from environment."""
     ctx_str = os.environ.get("NODE_CONTEXT", "")
@@ -67,17 +64,30 @@ def parse_node_context() -> dict:
         raise ValueError(f"Failed to parse NODE_CONTEXT: {e}")
 
 
-def get_s3_config() -> dict:
-    """Get S3 configuration from environment variables."""
-    return {
-        "endpoint": os.environ.get("S3_ENDPOINT", "minio:9000"),
-        "access_key": os.environ.get("S3_ACCESS_KEY", ""),
-        "secret_key": os.environ.get("S3_SECRET_KEY", ""),
-        "session_token": os.environ.get("S3_SESSION_TOKEN", ""),
-        "bucket": os.environ.get("S3_BUCKET", "data-pipeline"),
-        "use_ssl": os.environ.get("S3_USE_SSL", "false").lower() == "true",
-        "region": os.environ.get("S3_REGION", "us-east-1"),
-    }
+def create_s3_secret(conn, name: str, prefix: str, bucket: str):
+    """Create a DuckDB S3 secret scoped to one bucket from {prefix}_S3_* env vars.
+
+    Two secrets (INPUT + ARTIFACT) are created; DuckDB picks the matching one per
+    query from the path's bucket, so reads from the read-only upload bucket and
+    writes to the read+write artifact bucket each use the right credentials.
+    """
+    session_token = os.environ.get(f"{prefix}_S3_SESSION_TOKEN", "")
+    session_token_clause = ""
+    if session_token:
+        session_token_clause = f",\n                SESSION_TOKEN '{session_token}'"
+
+    conn.execute(f"""
+        CREATE SECRET {name} (
+            TYPE S3,
+            KEY_ID '{os.environ[f"{prefix}_S3_ACCESS_KEY"]}',
+            SECRET '{os.environ[f"{prefix}_S3_SECRET_KEY"]}',
+            ENDPOINT '{os.environ[f"{prefix}_S3_ENDPOINT"]}',
+            SCOPE 's3://{bucket}',
+            URL_STYLE 'path',
+            USE_SSL {os.environ.get(f"{prefix}_S3_USE_SSL", "false").lower()},
+            REGION '{os.environ.get(f"{prefix}_S3_REGION", "us-east-1")}'{session_token_clause}
+        )
+    """)
 
 
 def validate_context(ctx: dict):
@@ -92,9 +102,6 @@ def validate_context(ctx: dict):
     if not ctx.get("inputs"):
         raise ValueError("At least one input is required in NODE_CONTEXT")
 
-    if not ctx.get("output", {}).get("basePath"):
-        raise ValueError("output.basePath is required in NODE_CONTEXT")
-
     if not ctx.get("output", {}).get("files"):
         raise ValueError("output.files is required in NODE_CONTEXT")
 
@@ -102,7 +109,6 @@ def validate_context(ctx: dict):
 def main():
     # Parse context
     ctx = parse_node_context()
-    s3_config = get_s3_config()
 
     # Extract context fields
     node = ctx["node"]
@@ -113,7 +119,6 @@ def main():
     node_name = node["name"]
     node_slug = node["slug"]
     sql_query = config["sql"]
-    base_path = output["basePath"]
     output_files = output["files"]
 
     log("=== Data Access Server Node ===")
@@ -135,26 +140,14 @@ def main():
         log("Loading httpfs extension...")
         conn.load_extension("httpfs")
 
-        # Configure S3
+        # Configure S3 — one scoped secret per bucket. DuckDB selects the
+        # matching secret per query from the path's bucket prefix, so inputs
+        # from the read-only upload bucket and writes to the read+write
+        # artifact bucket both work.
         log("Configuring S3 connection...")
-        session_token_clause = ""
-        if s3_config["session_token"]:
-            session_token_clause = f",\n                SESSION_TOKEN '{s3_config['session_token']}'"
-            log("Using STS temporary credentials")
-
-        create_secret_sql = f"""
-            CREATE SECRET minio_secret (
-                TYPE S3,
-                KEY_ID '{s3_config["access_key"]}',
-                SECRET '{s3_config["secret_key"]}',
-                ENDPOINT '{s3_config["endpoint"]}',
-                URL_STYLE 'path',
-                USE_SSL {str(s3_config["use_ssl"]).lower()},
-                REGION '{s3_config["region"]}'{session_token_clause}
-            )
-        """
-        conn.execute(create_secret_sql)
-        log("S3 secret configured successfully")
+        create_s3_secret(conn, "input_secret", "INPUT", os.environ["INPUT_S3_BUCKET"])
+        create_s3_secret(conn, "artifact_secret", "ARTIFACT", os.environ["ARTIFACT_S3_BUCKET"])
+        log("S3 secrets configured successfully")
 
         # Load all inputs as tables
         log("Loading inputs...")
@@ -201,7 +194,8 @@ def main():
         for output_file in output_files:
             output_name = output_file["name"]
             output_format = output_file["format"]
-            output_path = f"{base_path}/{output_name}.{get_extension(output_format)}"
+            # Write to the exact path the platform assigned (always artifact bucket).
+            output_path = output_file["path"]
 
             log(f"Exporting '{output_name}' to {output_path}...")
 
@@ -229,7 +223,7 @@ def main():
             "outputs": [
                 {
                     "name": f["name"],
-                    "path": f"{base_path}/{f['name']}.{get_extension(f['format'])}",
+                    "path": f["path"],
                     "format": f["format"],
                 }
                 for f in output_files
