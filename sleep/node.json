@@ -1,0 +1,55 @@
+{
+  "version": "1.0",
+  "nodeType": "processing",
+  "name": "Sleep",
+  "shortDescription": "Delay the pipeline for a configured number of seconds, then pass the input through",
+  "description": "Sleeps for the configured duration, then copies its input artifact through to its output byte-for-byte. Wire it between two nodes to delay the downstream stage — useful for testing slow pipeline stages, execution timeouts, and short-lived STS credential expiry. Note: sleeps longer than the STS token lifetime (900-3600s, operator-configured) will fail at the copy step because the injected S3 credentials expire.",
+  "githubUrl": "https://github.com/<repo-link>",
+  "githubRef": "main",
+  "lucideIcon": "Timer",
+  "color": "#f59e0b",
+  "hasInput": true,
+  "inputDescription": "Any single upstream artifact (typically parquet) to pass through after the delay",
+  "config": {
+    "name": {
+      "type": "string",
+      "label": "Name",
+      "description": "Unique identifier for this sleep node in the pipeline",
+      "required": true,
+      "unique": true,
+      "placeholder": "e.g. delay_5min",
+      "validation": {
+        "patternKey": "snake_case"
+      }
+    },
+    "duration_seconds": {
+      "type": "number",
+      "label": "Duration (seconds)",
+      "description": "How long to sleep before passing the input through. 0 means no delay.",
+      "required": true,
+      "unique": false,
+      "default": 60,
+      "placeholder": "e.g. 300",
+      "validation": {
+        "minimum": 0,
+        "maximum": 86400,
+        "integer": true
+      }
+    }
+  },
+  "hasOutput": true,
+  "outputDescription": "The upstream artifact, copied through unchanged",
+  "outputFiles": [
+    {
+      "name": "result",
+      "format": "parquet",
+      "path": "{{artifacts}}/{{pipeline.name}}/{{execution.timestamp}}/{{node.name}}/result.parquet"
+    }
+  ],
+  "implementation": {
+    "type": "container",
+    "entrypoint": "python main.py",
+    "dockerfilePath": "Dockerfile",
+    "dockerContext": "sleep"
+  }
+}
