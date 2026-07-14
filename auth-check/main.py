@@ -2,17 +2,19 @@
 
 Contract:
 - Reads NODE_CONTEXT (JSON env var) for node identity.
-- Produces no artifacts. Instead it prints the auth the platform injects into
-  the Argo pod, so you can verify the credential arrives:
-    * API_KEY - a long-lived key identifying the user who ran the pipeline.
-                Present it to platform APIs as `Authorization: Bearer $API_KEY`;
-                the backend resolves it to that user (same identity + roles a
-                Keycloak token would give). It does not expire mid-run and is
-                revoked automatically when the execution finishes.
+- Produces no artifacts. Instead it prints the auth credential the platform injects
+  into the Argo pod, so you can verify it arrives. The backend injects exactly one,
+  depending on whether the API-key path is enabled:
+    * API_KEY  - a long-lived, per-user omop-auth key (feature ENABLED). Present it to
+                 platform APIs as `Authorization: Bearer $API_KEY`; the backend resolves
+                 it to that user (same identity + roles a Keycloak token would give). It
+                 does not expire mid-run and is NOT revoked when the execution finishes.
+    * USER_JWT - the caller's Keycloak JWT (feature DISABLED, i.e. no AUTHZ_URL — dev
+                 fallback). Present it as `Authorization: Bearer $USER_JWT`. Short-lived.
 - Prints a final JSON status to stdout; exits 0 on success, 1 on failure.
 
-DEBUG/VERIFICATION ONLY: this logs a secret (the API key) which is archived and
-shown in the execution log UI. Do not leave in real pipelines.
+DEBUG/VERIFICATION ONLY: this logs a secret (the key/JWT) which is archived and shown in
+the execution log UI. Do not leave in real pipelines.
 """
 
 import json
@@ -25,6 +27,7 @@ NODE_PREFIX = "[AUTH CHECK]"
 # (see backend/src/argo/workflow-builder.ts buildCustomNodeTemplates).
 AUTH_ENV_VARS = [
     "API_KEY",
+    "USER_JWT",
 ]
 
 
@@ -52,12 +55,19 @@ def main() -> None:
         else:
             log(f"  {var}: {value}")
 
-    # Show how to call a platform API as the user with the injected key.
+    # Show how to call a platform API as the user with whichever credential arrived.
     if os.environ.get("API_KEY"):
         log(
-            "To call a platform API as the user, send the header "
-            "'Authorization: Bearer $API_KEY' — no token refresh needed."
+            "API-key path is ENABLED — call platform APIs with "
+            "'Authorization: Bearer $API_KEY' (no token refresh needed)."
         )
+    elif os.environ.get("USER_JWT"):
+        log(
+            "API-key path is DISABLED — falling back to the Keycloak JWT. Call platform "
+            "APIs with 'Authorization: Bearer $USER_JWT' (short-lived)."
+        )
+    else:
+        log("No auth credential was injected (API-key path disabled and no JWT available).")
 
     log("Done")
     print(json.dumps({"success": True, "nodeName": node_name}))
