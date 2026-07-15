@@ -5,11 +5,13 @@ Python SDK for authenticated data access to the CBR / datakaveri platform.
 It wraps a three-step flow behind a single client:
 
 1. **Authenticate** against Keycloak with a username/password to obtain a
-   short-lived OAuth access token.
+   short-lived OAuth access token — or skip this step by passing an API key
+   (`sk_...`), which the server accepts anywhere an access token is accepted.
 2. **Fetch** managed PostgreSQL connection metadata from the connection-info
-   service using that token.
-3. **Connect** to PostgreSQL via SQLAlchemy — the access token is used as the
-   database password — and run read queries (returned as pandas DataFrames).
+   service using that credential.
+3. **Connect** to PostgreSQL via SQLAlchemy — the access token (or API key) is
+   used as the database password — and run read queries (returned as pandas
+   DataFrames).
 
 Data access is granted per **access request**: an approved request unlocks a set
 of cohorts and concepts, and each of its tables is queryable through the proxy as
@@ -48,6 +50,14 @@ with DataAccessClient(
 ) as client:
     df = client.query("SELECT * FROM person LIMIT 10")
     print(df)
+```
+
+Or authenticate with an API key issued by the OMOP auth server instead — the
+identity and grants behind it are the same:
+
+```python
+with DataAccessClient(api_key="sk_...") as client:
+    df = client.query("SELECT * FROM person LIMIT 10")
 ```
 
 See [`examples/quickstart.py`](examples/quickstart.py) for a fuller example.
@@ -119,13 +129,15 @@ deciding whether to pass `max_rows`.
 
 ## Configuration
 
-Pass the username and password to the constructor. The endpoint settings have
-sensible defaults and only need to be set if you target a different deployment.
+Pass either an API key or a username and password to the constructor. The
+endpoint settings have sensible defaults and only need to be set if you target a
+different deployment.
 
 | Constructor argument   | Required | Default |
 |------------------------|----------|---------|
-| `username`             | yes      | — |
-| `password`             | yes      | — |
+| `username`             | unless `api_key` | — |
+| `password`             | unless `api_key` | — |
+| `api_key`              | unless `username`/`password` | — |
 | `keycloak_url`         | no       | `https://keycloak.cbr-iisc.ac.in/auth/realms/cbr/protocol/openid-connect/token` |
 | `base_url`             | no       | `http://127.0.0.1:6060` |
 | `client_id`            | no       | `angular-client` |
@@ -135,12 +147,17 @@ sensible defaults and only need to be set if you target a different deployment.
 
 ## API overview
 
-- **`DataAccessClient(username, password, *, keycloak_url=..., base_url=..., client_id=..., request_timeout=300.0)`**
-  — construct a client (no network I/O until first use). Usable as a context
+- **`DataAccessClient(username=None, password=None, *, api_key=None, keycloak_url=..., base_url=..., client_id=..., request_timeout=300.0)`**
+  — construct a client (no network I/O until first use). Pass `api_key` instead
+  of `username`/`password` to authenticate with an API key. Usable as a context
   manager; exiting disposes the connection pool.
 - **`client.login() -> str`** — authenticate and cache the token (called lazily
-  when needed; an expired token triggers re-authentication automatically).
+  when needed; an expired token triggers re-authentication automatically). In
+  API-key mode there is nothing to log in to, so it just returns the key.
 - **`client.token_claims -> dict`** — decoded claims of the current token.
+  Raises `AuthenticationError` in API-key mode, as a key carries no claims.
+- **`client.identity -> str | None`** — the username this credential resolves
+  to; asks the server when only an API key is known.
 - **`client.set_access(request_id=None) -> AccessRequest`** — pick which
   approved request to query (only needed when you have several; with one it is
   resolved automatically). `client.default_request` shows the current pick;
@@ -191,6 +208,9 @@ All SDK errors derive from `DataAccessError` (which carries an optional
 - The access token is **short-lived** and is used as the database password; the
   client re-authenticates automatically when the token nears expiry.
 - Token refresh uses a fresh password grant (no `refresh_token` flow yet).
+- An API key is used in the same two places (bearer header, database password)
+  but does not expire, so it is never refreshed. Treat it as a password: it
+  stands in for the user until it is revoked.
 - Access is request-scoped server-side: only relations granted by an APPROVED
   access request resolve, queries are read-only, and concept-level row filters
   are applied inside the server-constructed queries — they cannot be bypassed

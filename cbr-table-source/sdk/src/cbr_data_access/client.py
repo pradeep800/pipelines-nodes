@@ -2,6 +2,8 @@
 
 Flow:
     1. Authenticate against Keycloak (username/password) -> OAuth access token.
+       Or skip this step by passing an API key (``sk_...``), which the server
+       accepts anywhere an access token is accepted.
     2. Call the connection-info endpoint with that token -> DB connection
        metadata (host, port, database, username).
     3. Connect to PostgreSQL via SQLAlchemy, using the access token as the
@@ -159,8 +161,14 @@ class DataAccessClient:
         for power users who want a raw SQLAlchemy ``Connection``.
 
     Args:
-        username: Keycloak username.
-        password: Keycloak password.
+        username: Keycloak username. Omit when passing ``api_key``.
+        password: Keycloak password. Omit when passing ``api_key``.
+        api_key: An opaque API key (``sk_...``) issued by the OMOP auth server,
+            used instead of a username/password. The key is presented as the
+            bearer token on HTTP endpoints and as the password in the Postgres
+            proxy handshake; the server resolves it to the same identity a
+            Keycloak token would give. Keys do not expire mid-run, so no
+            re-authentication happens.
         keycloak_url: Token endpoint (defaults to the CBR Keycloak realm).
         base_url: Base URL of the data-access service; the connection-info and
             requests endpoints hang off it.
@@ -169,29 +177,35 @@ class DataAccessClient:
             5 minutes).
 
     Raises:
-        AuthenticationError: If username or password is empty.
+        AuthenticationError: If neither ``api_key`` nor a username/password pair
+            is given.
 
     Example:
         >>> with DataAccessClient(username="u@example.org", password="...") as client:
         ...     print(client.list_requests().to_frame())
         ...     df = client.query("SELECT * FROM person LIMIT 10")
+
+        >>> with DataAccessClient(api_key="sk_...") as client:
+        ...     df = client.query("SELECT * FROM person LIMIT 10")
     """
 
     def __init__(
         self,
-        username: str,
-        password: str,
+        username: str | None = None,
+        password: str | None = None,
         *,
+        api_key: str | None = None,
         keycloak_url: str = config.DEFAULT_KEYCLOAK_URL,
         base_url: str = config.DEFAULT_BASE_URL,
         client_id: str = config.DEFAULT_CLIENT_ID,
         request_timeout: float = 300.0,
     ) -> None:
-        if not username or not password:
-            raise AuthenticationError("username and password are required")
+        if not api_key and not (username and password):
+            raise AuthenticationError("either api_key or username and password are required")
 
         self._username = username
         self._password = password
+        self._api_key = api_key
         self._keycloak_url = keycloak_url
         self._base_url = base_url.rstrip("/")
         self._connection_info_url = f"{self._base_url}{config.CONNECTION_INFO_PATH}"
@@ -199,7 +213,10 @@ class DataAccessClient:
         self._client_id = client_id
         self._timeout = request_timeout
 
-        self._access_token: str | None = None
+        # An API key is presented exactly where a Keycloak access token would be
+        # (bearer header, proxy password), so it seeds the token slot directly.
+        # It carries no `exp`, so it never triggers re-authentication.
+        self._access_token: str | None = api_key
         self._token_exp: float | None = None
         self._connection_info: dict[str, Any] | None = None
         self._engine: Engine | None = None
@@ -230,13 +247,19 @@ class DataAccessClient:
     def login(self) -> str:
         """Authenticate against Keycloak and cache the access token.
 
+        In API-key mode there is nothing to log in to: the key is already the
+        credential, so this returns it unchanged.
+
         Returns:
-            The access token.
+            The access token, or the API key when the client was built with one.
 
         Raises:
             AuthenticationError: On transport failure, a non-200 response, or a
                 response without an ``access_token``.
         """
+        if self._api_key:
+            return self._api_key
+
         data = {
             "grant_type": "password",
             "client_id": self._client_id,
@@ -286,8 +309,28 @@ class DataAccessClient:
 
     @property
     def token_claims(self) -> dict[str, Any]:
-        """Decoded claims of the current token (authenticates if needed)."""
+        """Decoded claims of the current token (authenticates if needed).
+
+        Raises:
+            AuthenticationError: In API-key mode. An API key is opaque, so it
+                carries no claims to decode — ask the server who you are with
+                :attr:`identity` or :meth:`list_requests` instead.
+        """
+        if self._api_key:
+            raise AuthenticationError("an API key is opaque and carries no claims; use identity")
         return decode_token(self._ensure_token())
+
+    @property
+    def identity(self) -> str | None:
+        """The username the server resolves this credential to.
+
+        Uses the locally known username when the client was built with one;
+        otherwise asks the server (API keys are opaque, so the identity behind
+        one is only knowable server-side).
+        """
+        if self._username:
+            return self._username
+        return self._ensure_connection_info().get("username")
 
     # ------------------------------------------------------------------ #
     # connection info

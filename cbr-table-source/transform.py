@@ -2,16 +2,16 @@
 """
 DB Table Source - Custom Node Container
 
-Uses the cbr-data-access SDK to authenticate with Keycloak, download a
-table from the caller's approved access request on the CBR data-access
-server, and upload the result as Parquet to MinIO so downstream pipeline
-nodes can consume it as an artifact.
+Uses the cbr-data-access SDK to download a table from the caller's approved
+access request on the CBR data-access server, and upload the result as
+Parquet to MinIO so downstream pipeline nodes can consume it as an artifact.
 
-Authentication reuses the caller's own Keycloak session instead of asking
-for a username/password in the node config: Argo injects KEYCLOAK_ACCESS_TOKEN
-/ KEYCLOAK_REFRESH_TOKEN / KEYCLOAK_TOKEN_URL into every node pod (see the
-"Auth Check" node), so this node seeds the SDK client with that access token
-directly and refreshes it via the refresh-token grant if it expires mid-run.
+Authentication reuses the caller's own identity instead of asking for
+credentials in the node config: Argo injects API_KEY into every node pod (see
+the "Auth Check" node), so this node hands that key to the SDK. The server
+resolves it to the user who ran the pipeline. The key does not expire
+mid-run and is revoked when the execution finishes, so there is nothing to
+refresh.
 
 This node has no S3 inputs (the table comes from the data-access server via
 the SDK), so it only needs the artifact bucket's credentials:
@@ -27,17 +27,13 @@ import tempfile
 import time
 
 import boto3
-import requests
 from boto3.s3.transfer import TransferConfig
 from botocore.client import Config
-from cbr_data_access import DataAccessClient, decode_token
+from cbr_data_access import DataAccessClient
 from cbr_data_access.exceptions import AuthenticationError, DataAccessError
 
-# Same Keycloak env vars the "Auth Check" node verifies are reachable in the pod.
-KEYCLOAK_CLIENT_ID = os.environ.get("KEYCLOAK_CLIENT_ID", "angular-client")
-
 # Bump this on every code change so a run's logs prove which build is live.
-NODE_VERSION = "2026-06-30.5-two-bucket-s3"
+NODE_VERSION = "2026-07-15.1-api-key-auth"
 
 
 def log(msg):
@@ -73,57 +69,14 @@ def parse_row_limit(raw):
     return n or None  # 0 => no limit
 
 
-def _refresh_via_argo_token(client, token_url, timeout):
-    """Bound onto the client as `login`: refresh KEYCLOAK_REFRESH_TOKEN instead
-    of doing a password grant, since this node has no username/password."""
-    refresh_token = os.environ.get("KEYCLOAK_REFRESH_TOKEN")
-    if not refresh_token:
-        raise AuthenticationError("Access token expired and KEYCLOAK_REFRESH_TOKEN is not set")
-
-    data = {
-        "grant_type": "refresh_token",
-        "client_id": KEYCLOAK_CLIENT_ID,
-        "refresh_token": refresh_token,
-    }
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    try:
-        response = requests.post(token_url, data=data, headers=headers, timeout=timeout)
-    except requests.RequestException as exc:
-        raise AuthenticationError(f"Keycloak refresh request failed: {exc}") from exc
-    if response.status_code != 200:
-        raise AuthenticationError(response.text, status_code=response.status_code)
-
-    token = response.json().get("access_token")
-    if not token:
-        raise AuthenticationError("No access_token in Keycloak refresh response")
-
-    client._access_token = token
-    client._token_exp = client._read_exp(token)
-    return token
-
-
 def build_authenticated_client(**sdk_kwargs):
-    """Build a DataAccessClient from the Keycloak tokens Argo injects into the
-    pod, instead of a username/password stored in the pipeline config."""
-    access_token = os.environ.get("KEYCLOAK_ACCESS_TOKEN")
-    token_url = os.environ.get("KEYCLOAK_TOKEN_URL")
-    if not access_token:
-        raise AuthenticationError("KEYCLOAK_ACCESS_TOKEN is not set in this pod")
+    """Build a DataAccessClient from the API key Argo injects into the pod,
+    instead of credentials stored in the pipeline config."""
+    api_key = os.environ.get("API_KEY")
+    if not api_key:
+        raise AuthenticationError("API_KEY is not set in this pod")
 
-    claims = decode_token(access_token)
-    display_user = claims.get("preferred_username") or claims.get("email") or claims.get("sub")
-    log(f"Using injected Keycloak session for: {display_user}")
-
-    # username/password are unused (auth is seeded below) but the constructor
-    # requires non-empty strings.
-    client = DataAccessClient(username=str(display_user), password="argo-token-auth", **sdk_kwargs)
-    client._access_token = access_token
-    client._token_exp = client._read_exp(access_token)
-
-    if token_url:
-        client.login = lambda: _refresh_via_argo_token(client, token_url, client._timeout)
-
-    return client
+    return DataAccessClient(api_key=api_key, **sdk_kwargs)
 
 
 def main():
@@ -171,7 +124,9 @@ def main():
 
     try:
         with build_authenticated_client(**sdk_kwargs) as client:
-            log("Authenticated using injected Keycloak session")
+            # Resolved server-side: the key is opaque, so this both names the
+            # user and proves the key is live before we query.
+            log(f"Authenticated with injected API key as: {client.identity}")
 
             if view_id:
                 log(f"Setting access request: {view_id}")

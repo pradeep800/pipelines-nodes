@@ -3,7 +3,7 @@
   "nodeType": "processing",
   "name": "DB Table Source",
   "shortDescription": "Fetch a table from the CBR data ",
-  "description": "Authenticates using the caller's Keycloak tokens injected by Argo (no credentials stored in the pipeline), downloads a table from your approved access request using the cbr-data-access SDK, and stores the result in MinIO as Parquet for downstream nodes.",
+  "description": "Authenticates as the user who ran the pipeline using the API key injected by Argo (no credentials stored in the pipeline), downloads a table from your approved access request using the cbr-data-access SDK, and stores the result in MinIO as Parquet for downstream nodes.",
   "githubUrl": "https://github.com/<repo-link>",
   "githubRef": "main",
   "lucideIcon": "DatabaseZap",
@@ -67,7 +67,7 @@
   ],
   "implementation": {
     "type": "container",
-    "entrypoint": "python fetch.py",
+    "entrypoint": "python transform.py",
     "dockerfilePath": "Dockerfile",
     "dockerContext": "cbr-table-source"
   }
