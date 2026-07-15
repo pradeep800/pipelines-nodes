@@ -38,9 +38,8 @@
       "required": false,
       "unique": false,
       "placeholder": "All granted cohorts",
-      "order": 3,
+      "order": 2,
       "options": [
-        { "value": "", "label": "All granted cohorts" },
         { "value": "SANSCOG", "label": "SANSCOG" },
         { "value": "TLSA", "label": "TLSA" }
       ]
