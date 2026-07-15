@@ -39,7 +39,7 @@ import os
 import shutil
 import tempfile
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import polars as pl
@@ -69,8 +69,8 @@ def index_columns(cohort: int | str | None = None) -> list[str]:
 
     Mirrors the index :func:`aggregate` pivots on for the same ``cohort``
     argument: a single-cohort export drops the constant ``Cohort`` column, a
-    full export leads with it. Callers joining frames across datasets must join
-    on exactly these.
+    full export leads with it. Callers stacking or joining frames across
+    datasets need these to tell identity columns from field columns.
     """
     return list(_INDEX_COLS) if cohort is not None else ["Cohort", *_INDEX_COLS]
 
@@ -102,11 +102,6 @@ _INDEX_COLS = [
 # always an int — injection-safe.
 _COHORT_SENTINEL = "__COHORT__"
 
-# Sentinel replaced by _long_sql_for with an optional concept_map narrowing. The
-# dataset names are user config, so they are bound as :datasets rather than
-# interpolated; only the presence of the clause is decided here.
-_DATASET_SENTINEL = "__DATASET_FILTER__"
-
 # Long-format pull, written for the proxy: plain table names (qualified by the
 # client to req_<id>.*). EVERY base table carries its own literal
 # `cohort_id = <id>` WHERE filter: a literal lets Postgres prune the proxy's
@@ -133,7 +128,6 @@ WITH concept_map AS (
     WHERE cohort = __COHORT__
       AND concept_id IS NOT NULL
       AND source_field_name IS NOT NULL
-      __DATASET_FILTER__
 ),
 person_base AS MATERIALIZED (
     SELECT
@@ -218,18 +212,9 @@ JOIN person_base pb
 """
 
 
-def _long_sql_for(cohort: int, dataset_filter: Sequence[str] | None = None) -> str:
-    """Return the long-format SQL scoped to a single cohort (literal-filtered).
-
-    ``datasets`` narrows concept_map to those ``local_concept.dataset`` values.
-    Filtering here rather than after the pivot means the long pull never streams
-    the unselected datasets' rows at all — the spool, and every phase downstream
-    of it, only ever sees the datasets being exported.
-    """
-    sql = _LONG_SQL_TEMPLATE.replace(_COHORT_SENTINEL, str(int(cohort)))
-    return sql.replace(
-        _DATASET_SENTINEL, "AND dataset = ANY(:datasets)" if dataset_filter else ""
-    )
+def _long_sql_for(cohort: int) -> str:
+    """Return the long-format SQL scoped to a single cohort (literal-filtered)."""
+    return _LONG_SQL_TEMPLATE.replace(_COHORT_SENTINEL, str(int(cohort)))
 
 
 ProgressReporter = Callable[[str], None]
@@ -273,7 +258,6 @@ def _spool_long_parquet(
     cohort: int,
     gender_male: int,
     gender_female: int,
-    dataset_filter: Sequence[str] | None = None,
     report: ProgressReporter = _noop_progress,
 ) -> str:
     """Run the long-format pull for ONE cohort and spool it to Parquet parts.
@@ -289,14 +273,8 @@ def _spool_long_parquet(
     memory; the spool loop itself only holds one fetch batch of Python rows.
     """
     request_schema = client._ensure_access().schema  # type: ignore[attr-defined]
-    sql = qualify_statement(_long_sql_for(cohort, dataset_filter), request_schema)
-    params: dict[str, object] = {
-        "gender_male": gender_male,
-        "gender_female": gender_female,
-    }
-    if dataset_filter:
-        # psycopg2 adapts a list to a Postgres array for the ANY(...) above.
-        params["datasets"] = list(dataset_filter)
+    sql = qualify_statement(_long_sql_for(cohort), request_schema)
+    params = {"gender_male": gender_male, "gender_female": gender_female}
 
     # Spool dir in the system temp dir (/tmp on Linux; set TMPDIR to move it
     # if /tmp is a small tmpfs and the pull is huge).
@@ -544,7 +522,6 @@ def _fetch_pivoted_cohort(
     cohort: int,
     gender_male: int,
     gender_female: int,
-    dataset_filter: Sequence[str] | None = None,
     index_cols: list[str],
     drop_cohort: bool,
     report: ProgressReporter,
@@ -563,7 +540,6 @@ def _fetch_pivoted_cohort(
         cohort=cohort,
         gender_male=gender_male,
         gender_female=gender_female,
-        dataset_filter=dataset_filter,
         report=report,
     )
     try:
@@ -586,7 +562,6 @@ def _aggregate_cohorts(
     *,
     gender_male: int,
     gender_female: int,
-    dataset_filter: Sequence[str] | None = None,
     index_cols: list[str],
     drop_cohort: bool,
     max_workers: int,
@@ -612,7 +587,6 @@ def _aggregate_cohorts(
                         cohort=cohort,
                         gender_male=gender_male,
                         gender_female=gender_female,
-                        dataset_filter=dataset_filter,
                         index_cols=index_cols,
                         drop_cohort=drop_cohort,
                         report=report,
@@ -633,7 +607,6 @@ def _aggregate_cohorts(
                 cohort=cohort,
                 gender_male=gender_male,
                 gender_female=gender_female,
-                dataset_filter=dataset_filter,
                 index_cols=index_cols,
                 drop_cohort=drop_cohort,
                 report=report,
@@ -656,7 +629,6 @@ def aggregate(
     client: object,
     cohort: int | str | None = None,
     *,
-    datasets: Sequence[str] | None = None,
     gender_male: int = GENDER_CONCEPT_ID_MALE,
     gender_female: int = GENDER_CONCEPT_ID_FEMALE,
     max_workers: int = 1,
@@ -683,9 +655,6 @@ def aggregate(
             column is dropped from the sheets, and only that cohort is queried.
             ``None`` (default) exports every granted cohort and prepends a
             ``Cohort`` column carrying the cohort names.
-        datasets: Export only these ``local_concept.dataset`` names, filtered in
-            the SQL so the unselected datasets are never pulled. ``None`` or
-            empty (default) exports every dataset the request grants.
         gender_male / gender_female: Gender concept ids used to label ``Gender``.
         max_workers: Max cohorts fetched concurrently (capped at the cohort count).
             Defaults to 1 to avoid piling up heavy scans/streams.
@@ -710,22 +679,16 @@ def aggregate(
     if not cohorts:
         raise RuntimeError("The access request grants no cohorts.")
 
-    frames = _aggregate_cohorts(
+    datasets = _aggregate_cohorts(
         client,
         cohorts,
         gender_male=gender_male,
         gender_female=gender_female,
-        dataset_filter=datasets,
         index_cols=index_cols,
         drop_cohort=drop_cohort,
         max_workers=max_workers,
         progress=progress,
     )
-    if not frames:
-        if datasets:
-            raise RuntimeError(
-                f"No data returned for dataset(s) {sorted(datasets)} in the "
-                f"granted cohort(s). Check the names against local_concept.dataset."
-            )
+    if not datasets:
         raise RuntimeError("No data returned for the granted cohort(s).")
-    return frames
+    return datasets

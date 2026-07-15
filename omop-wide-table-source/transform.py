@@ -11,16 +11,19 @@ and pivots each local_concept.dataset off that spool with polars' streaming
 engine. Peak memory is one dataset's wide frame, not the whole pull -- which is
 what keeps a large cohort from OOMing in a pod with a ~2Gi limit.
 
-aggregate() returns {dataset_name: frame}, but a node declares its outputs
-statically, so this node always emits exactly one result.parquet:
+aggregate() returns one wide frame per dataset, but a node declares its outputs
+statically. Rather than make the user pick one dataset per node, this stacks
+every granted dataset into a single result.parquet and adds a `dataset` column
+naming each row's source:
 
-  one dataset    -> that dataset's sheet.
-  many datasets  -> those datasets, outer-joined on the identity columns into a
-                    single wide sheet.
-  none listed    -> every dataset the request grants, joined the same way.
+    dataset | Barcode | Visit | aft_score | mmse_total
+    AFT     |  B001   |  V1   |    1.0    |    null
+    MMSE    |  B001   |  V1   |   null    |     28
 
-Whatever is listed is pushed into the SQL, so the unselected datasets are never
-pulled at all.
+Datasets don't share field columns, so the sheet is sparse by construction: a
+row is null in the columns owned by the other datasets. That is the trade for
+one file and no config -- downstream narrows it with a plain
+`WHERE dataset = 'AFT'`.
 
 Authentication reuses the caller's own identity instead of storing credentials
 in the node config: Argo injects API_KEY into every node pod, and the SDK hands
@@ -40,6 +43,7 @@ import tempfile
 import time
 
 import boto3
+import polars as pl
 from boto3.s3.transfer import TransferConfig
 from botocore.client import Config
 from cbr_data_access import DataAccessClient
@@ -78,22 +82,6 @@ def parse_request_id(raw):
     return (str(raw).strip() or None) if raw else None
 
 
-def parse_datasets(raw):
-    """The array field stores a list; empty means every granted dataset.
-
-    Tolerates a bare string too, so a config hand-edited to the older
-    single-dataset form still runs.
-    """
-    if raw is None:
-        return []
-    items = [raw] if isinstance(raw, str) else list(raw)
-    names = [str(x).strip() for x in items if str(x).strip()]
-    duplicates = {n for n in names if names.count(n) > 1}
-    if duplicates:
-        raise ValueError(f"Duplicate dataset(s): {sorted(duplicates)}")
-    return names
-
-
 def parse_cohort(raw):
     """Blank means every granted cohort (aggregate's own default)."""
     if raw is None or not str(raw).strip():
@@ -119,55 +107,40 @@ def build_authenticated_client(**sdk_kwargs):
     return DataAccessClient(api_key=api_key, **sdk_kwargs)
 
 
-def join_datasets(datasets, index_cols):
-    """Outer-join every dataset's wide frame into one sheet.
+DATASET_COLUMN = "dataset"
 
-    Each frame is keyed by the same identity columns, so joining on them yields
-    one row per subject-visit carrying every dataset's fields. Two datasets can
-    legitimately share a field_name; those would collide in the joined frame, so
-    the incoming side is suffixed with its dataset name rather than silently
-    landing as polars' default "_right".
+
+def stack_datasets(frames, index_cols):
+    """Stack every dataset's wide frame into one sheet, tagged by dataset.
+
+    Each frame carries the same identity columns but its own field columns, so
+    the stack is a diagonal concat: the result holds the union of all field
+    columns, and a row is null in the columns belonging to the other datasets.
+    The dataset column is what makes that readable -- it names the frame each
+    row came from, so downstream can filter (WHERE dataset = 'AFT') rather than
+    guess from which columns happen to be populated.
+
+    Two datasets sharing a field_name land in one column here rather than
+    colliding: same field, different rows, told apart by the dataset column.
+    "diagonal_relaxed" is what allows that when they disagree on dtype -- it
+    widens to a common supertype instead of raising.
     """
-    merged = None
-    for name in sorted(datasets):
-        frame = datasets[name]
-        if merged is None:
-            merged = frame
-            continue
-        keys = [c for c in index_cols if c in merged.columns and c in frame.columns]
-        merged = merged.join(frame, on=keys, how="full", coalesce=True, suffix=f"_{name}")
-    return merged
+    tagged = [
+        frame.with_columns(pl.lit(name).alias(DATASET_COLUMN))
+        for name, frame in sorted(frames.items())
+    ]
+    stacked = pl.concat(tagged, how="diagonal_relaxed")
+    return order_columns(stacked, index_cols)
 
 
 def order_columns(frame, index_cols):
-    """Identity columns first (in aggregate's order), then fields alphabetically."""
-    lead = [c for c in index_cols if c in frame.columns]
-    return frame.select(lead + sorted(c for c in frame.columns if c not in lead))
-
-
-def select_output_frame(frames, requested, index_cols):
-    """Reduce aggregate()'s {name: frame} to the single frame this node emits.
-
-    The pull was already filtered to `requested`, so a name missing from the
-    result matched nothing in local_concept -- worth failing on rather than
-    silently exporting a narrower sheet than the user asked for.
-    """
-    if requested:
-        missing = [name for name in requested if name not in frames]
-        if missing:
-            raise ValueError(
-                f"Dataset(s) {missing} returned no rows; got {sorted(frames)} "
-                f"instead. Check the names against local_concept.dataset."
-            )
-        frames = {name: frames[name] for name in requested}
-
-    if len(frames) == 1:
-        name, frame = next(iter(frames.items()))
-        log(f"Exporting dataset {name!r}")
-        return frame
-
-    log(f"Joining {len(frames)} datasets on {index_cols}: {sorted(frames)}")
-    return order_columns(join_datasets(frames, index_cols), index_cols)
+    """dataset first, then identity columns in aggregate's order, then fields."""
+    lead = [DATASET_COLUMN] + [c for c in index_cols if c in frame.columns]
+    ordered = frame.select(lead + sorted(c for c in frame.columns if c not in lead))
+    # aggregate sorts each frame's rows on its own; re-sort across the stack so
+    # a dataset's rows stay contiguous and the file is byte-stable run to run.
+    sort_by = [c for c in (DATASET_COLUMN, "Cohort", "Barcode", "Visit") if c in ordered.columns]
+    return ordered.sort(sort_by) if sort_by else ordered
 
 
 def main():
@@ -177,13 +150,12 @@ def main():
     node = ctx["node"]
     output = ctx["output"]
 
-    datasets = parse_datasets(config.get("datasets"))
     cohort = parse_cohort(config.get("cohort"))
     request_id = parse_request_id(config.get("access_request"))
     out_files = output["files"]
 
-    log(f"Node: {node['name']} | Datasets: {datasets or 'all granted (joined)'} | "
-        f"Cohort: {cohort or 'all granted'} | Request: {request_id or 'auto'}")
+    log(f"Node: {node['name']} | Cohort: {cohort or 'all granted'} | "
+        f"Request: {request_id or 'auto'}")
 
     # Optional endpoint overrides (pass as pod env vars if needed)
     sdk_kwargs = {}
@@ -241,16 +213,13 @@ def main():
                 # surfaces its phase timing, which is the only output during a
                 # pull that can run for minutes.
                 t0 = time.monotonic()
-                frames = aggregate(
-                    client,
-                    cohort,
-                    datasets=datasets or None,
-                    progress=log,
-                )
+                frames = aggregate(client, cohort, progress=log)
                 log(f"Aggregate complete in {time.monotonic() - t0:.1f}s; "
                     f"datasets: {sorted(frames)}")
 
-                frame = select_output_frame(frames, datasets, index_columns(cohort))
+                frame = stack_datasets(frames, index_columns(cohort))
+                log(f"Stacked {len(frames)} dataset(s) into one sheet: "
+                    f"{frame.height:,} rows x {frame.width:,} cols")
 
                 t_enc = time.monotonic()
                 frame.write_parquet(local_path, compression=compression or "uncompressed")
@@ -290,7 +259,7 @@ def main():
             "success": True,
             "version": NODE_VERSION,
             "nodeName": node["name"],
-            "datasets": datasets,
+            "datasets": sorted(frames),
             "cohort": cohort,
             "rows": frame.height,
             "columns": frame.width,
