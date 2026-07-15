@@ -51,7 +51,12 @@ from cbr_data_access.aggregate import COHORT_NAMES, aggregate, index_columns
 from cbr_data_access.exceptions import AuthenticationError, DataAccessError
 
 # Bump this on every code change so a run's logs prove which build is live.
-NODE_VERSION = "2026-07-15.1-wide-aggregate"
+NODE_VERSION = "2026-07-15.2-wide-aggregate"
+
+# The "All granted cohorts" row in the node.json select. A select option can't
+# carry an empty value, so "every cohort" travels as this sentinel rather than
+# as a blank.
+ALL_COHORTS = "__all__"
 
 
 def log(msg):
@@ -83,8 +88,13 @@ def parse_request_id(raw):
 
 
 def parse_cohort(raw):
-    """Blank means every granted cohort (aggregate's own default)."""
-    if raw is None or not str(raw).strip():
+    """The ALL_COHORTS sentinel, or blank, means every granted cohort.
+
+    The select sends ALL_COHORTS when the user picks "All granted cohorts"; a
+    node saved before that option existed sends nothing. Both mean the same to
+    aggregate(), which reads None as its every-cohort default.
+    """
+    if raw is None or not str(raw).strip() or str(raw).strip() == ALL_COHORTS:
         return None
     cohort = str(raw).strip()
     # aggregate() accepts an id or a known name; ids arrive as strings from the

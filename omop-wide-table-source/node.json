@@ -34,12 +34,14 @@
     "cohort": {
       "type": "select",
       "label": "Cohort",
-      "description": "Export a single cohort, which drops the Cohort column. Leave blank to export every cohort your request grants, with a Cohort column naming each.",
+      "description": "Export a single cohort, which drops the Cohort column. Pick \"All granted cohorts\" to export every cohort your request grants, with a Cohort column naming each.",
       "required": false,
       "unique": false,
       "placeholder": "All granted cohorts",
+      "default": "__all__",
       "order": 2,
       "options": [
+        { "value": "__all__", "label": "All granted cohorts" },
         { "value": "SANSCOG", "label": "SANSCOG" },
         { "value": "TLSA", "label": "TLSA" }
       ]
