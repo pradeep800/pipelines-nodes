@@ -1,0 +1,74 @@
+{
+  "version": "1.0",
+  "nodeType": "processing",
+  "name": "OMOP Wide Table Source",
+  "shortDescription": "Export a wide-format view of your granted OMOP cohort data",
+  "description": "Builds a wide-format table from your approved access request: one row per subject-visit, one column per source field. Name one dataset to export just that one, several to join them into a single sheet, or none to join every dataset your request grants. Authenticates as the user who ran the pipeline using the API key injected by Argo (no credentials stored in the pipeline), and stores the result as Parquet for downstream nodes.",
+  "githubUrl": "https://github.com/<repo-link>",
+  "githubRef": "main",
+  "lucideIcon": "Table2",
+  "color": "#0ea5e9",
+  "hasInput": false,
+  "config": {
+    "name": {
+      "type": "string",
+      "label": "Name",
+      "description": "Unique identifier for this node in the pipeline",
+      "required": true,
+      "unique": true,
+      "placeholder": "e.g. wide_cognition_export",
+      "order": 0,
+      "validation": {
+        "patternKey": "snake_case"
+      }
+    },
+    "access_request": {
+      "type": "access-request",
+      "label": "Use Case",
+      "description": "Pick one of your approved access requests. Its use case is shown here; the request id is stored and used when the pipeline runs.",
+      "required": true,
+      "unique": false,
+      "placeholder": "Select a use case…",
+      "order": 1
+    },
+    "datasets": {
+      "type": "array",
+      "item_type": "string",
+      "label": "Datasets",
+      "description": "Dataset names to export, exactly as they appear in the concept catalog (e.g. AFT). Add several to join them into one sheet, or add none to export every dataset your request grants.",
+      "required": false,
+      "unique": false,
+      "placeholder": "e.g. AFT — add none for all granted datasets",
+      "order": 2
+    },
+    "cohort": {
+      "type": "select",
+      "label": "Cohort",
+      "description": "Export a single cohort, which drops the Cohort column. Leave blank to export every cohort your request grants, with a Cohort column naming each.",
+      "required": false,
+      "unique": false,
+      "placeholder": "All granted cohorts",
+      "order": 3,
+      "options": [
+        { "value": "", "label": "All granted cohorts" },
+        { "value": "SANSCOG", "label": "SANSCOG" },
+        { "value": "TLSA", "label": "TLSA" }
+      ]
+    }
+  },
+  "hasOutput": true,
+  "outputDescription": "Wide-format table: one row per subject-visit, one column per source field, as Parquet",
+  "outputFiles": [
+    {
+      "name": "result",
+      "format": "parquet",
+      "path": "{{artifacts}}/{{pipeline.name}}/{{execution.timestamp}}/{{node.name}}/result.parquet"
+    }
+  ],
+  "implementation": {
+    "type": "container",
+    "entrypoint": "python transform.py",
+    "dockerfilePath": "Dockerfile",
+    "dockerContext": "omop-wide-table-source"
+  }
+}
