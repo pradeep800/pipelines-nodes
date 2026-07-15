@@ -12,7 +12,7 @@
   "config": {
     "name": {
       "type": "string",
-      "label": "Node Name",
+      "label": "Name",
       "description": "Unique identifier for this node in the pipeline",
       "required": true,
       "unique": true,
