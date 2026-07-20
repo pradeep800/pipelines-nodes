@@ -26,9 +26,10 @@ one file and no config -- downstream narrows it with a plain
 `WHERE dataset = 'AFT'`.
 
 Authentication reuses the caller's own identity instead of storing credentials
-in the node config: Argo injects API_KEY into every node pod, and the SDK hands
-it to the server, which resolves it to the user who ran the pipeline. The key
-does not expire mid-run and is revoked when the execution finishes.
+in the node config: Argo injects API_KEY into every node pod, this node writes
+it to a token file (the only credential source the SDK reads), and the server
+resolves it to the user who ran the pipeline. The key does not expire mid-run
+and is revoked when the execution finishes.
 
 This node has no S3 inputs (the data comes from the data-access server via the
 SDK), so it only needs the artifact bucket's credentials:
@@ -51,7 +52,7 @@ from cbr_data_access.aggregate import COHORT_NAMES, aggregate
 from cbr_data_access.exceptions import AuthenticationError, DataAccessError
 
 # Bump this on every code change so a run's logs prove which build is live.
-NODE_VERSION = "2026-07-21.3-local-index-cols"
+NODE_VERSION = "2026-07-21.4-token-file-auth"
 
 # The "All granted cohorts" row in the node.json select. A select option can't
 # carry an empty value, so "every cohort" travels as this sentinel rather than
@@ -109,13 +110,22 @@ def parse_cohort(raw):
 
 def build_authenticated_client(**sdk_kwargs):
     """Build a DataAccessClient from the API key Argo injects into the pod,
-    instead of credentials stored in the pipeline config."""
+    instead of credentials stored in the pipeline config.
+
+    The SDK reads bearer tokens only from a file (token_file kwarg, else the
+    platform sidecar's default path) -- it has no api_key argument -- so the
+    injected key is written to a private token file and handed over by path.
+    """
     api_key = os.environ.get("API_KEY")
-    db_driver = "adbc"
     if not api_key:
         raise AuthenticationError("API_KEY is not set in this pod")
 
-    return DataAccessClient(api_key=api_key, driver=db_driver, **sdk_kwargs)
+    token_file = os.path.join(tempfile.gettempdir(), ".cbr-token")
+    fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(api_key)
+
+    return DataAccessClient(token_file=token_file, driver="adbc", **sdk_kwargs)
 
 
 DATASET_COLUMN = "dataset"
@@ -185,10 +195,8 @@ def main():
     log(f"Node: {node['name']} | Cohort: {cohort or 'all granted'} | "
         f"Request: {request_id or 'auto'}")
 
-    # Optional endpoint overrides (pass as pod env vars if needed)
+    # Optional endpoint override (pass as a pod env var if needed)
     sdk_kwargs = {}
-    if os.environ.get("CBR_KEYCLOAK_URL"):
-        sdk_kwargs["keycloak_url"] = os.environ["CBR_KEYCLOAK_URL"]
     if os.environ.get("CBR_BASE_URL"):
         sdk_kwargs["base_url"] = os.environ["CBR_BASE_URL"]
 
@@ -215,9 +223,15 @@ def main():
 
     try:
         with build_authenticated_client(**sdk_kwargs) as client:
-            # Resolved server-side: the key is opaque, so this both names the
-            # user and proves the key is live before we query.
-            log(f"Authenticated with injected API key as: {client.identity}")
+            # token_claims decodes the token as a JWT; an opaque API key can't
+            # be decoded, and either way the server is what proves it is live.
+            try:
+                claims = client.token_claims
+                who = (claims.get("preferred_username") or claims.get("email")
+                       or claims.get("sub") or "unknown")
+                log(f"Token loaded; subject: {who}")
+            except Exception:
+                log("Token loaded (opaque key; claims not decodable)")
 
             if request_id:
                 log(f"Setting access request: {request_id}")
