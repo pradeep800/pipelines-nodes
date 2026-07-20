@@ -71,11 +71,11 @@ def _resolve_cohort_id(cohort: int | str) -> int:
         name = cohort.strip()
         if name not in _COHORT_ID_BY_NAME:
             raise ValueError(
-                f"Unknown cohort name {name!r}; known names: {sorted(_COHORT_ID_BY_NAME)}"
+                f"Unknown cohort name {name!r}; known names: "
+                f"{sorted(_COHORT_ID_BY_NAME)}"
             )
         return _COHORT_ID_BY_NAME[name]
     return int(cohort)
-
 
 # Identity columns carried through to every wide sheet (the pivot index).
 _INDEX_COLS = [
@@ -156,7 +156,7 @@ meas_long AS (
         m.visit_occurrence_id,
         cm.dataset,
         cm.source_field_name                                          AS field_name,
-        m.value_as_number::text                                       AS field_value
+        COALESCE(m.value_source_value, m.value_as_number::text)       AS field_value
     FROM measurement m
     JOIN concept_map cm
       ON cm.concept_id = m.measurement_source_concept_id
@@ -170,7 +170,8 @@ obs_long AS (
         o.visit_occurrence_id,
         cm.dataset,
         cm.source_field_name                                          AS field_name,
-        o.value_as_string                                             AS field_value
+        COALESCE(o.value_source_value, o.value_as_string,
+                 o.value_as_number::text)                             AS field_value
     FROM observation o
     JOIN concept_map cm
       ON cm.concept_id = o.observation_source_concept_id
@@ -256,7 +257,9 @@ _LONG_COLUMNS = [
 
 def _long_spool_schema() -> pl.Schema:
     """Return the stable schema shared by SQLAlchemy and ADBC spool parts."""
-    return pl.Schema({name: _SPOOL_DTYPES.get(name, pl.String) for name in _LONG_COLUMNS})
+    return pl.Schema(
+        {name: _SPOOL_DTYPES.get(name, pl.String) for name in _LONG_COLUMNS}
+    )
 
 
 def _adbc_long_sql_for(
@@ -356,7 +359,10 @@ def _spool_long_parquet(
                     f"seconds={time.perf_counter() - spool_start:.1f}"
                 )
                 spool_schema = pl.Schema(
-                    {key: _SPOOL_DTYPES.get(key, pl.String) for key in result.keys()}
+                    {
+                        key: _SPOOL_DTYPES.get(key, pl.String)
+                        for key in result.keys()
+                    }
                 )
                 while True:
                     batch = result.fetchmany(_FETCH_CHUNK)
@@ -407,7 +413,9 @@ def _scan_long_spool(spool_dir: str) -> pl.LazyFrame:
     """
     lf = pl.scan_parquet(os.path.join(spool_dir, "*.parquet"))
     if "Cohort" in lf.collect_schema().names():
-        lf = lf.with_columns(pl.col("Cohort").cast(pl.String).replace(_COHORT_NAME_BY_ID))
+        lf = lf.with_columns(
+            pl.col("Cohort").cast(pl.String).replace(_COHORT_NAME_BY_ID)
+        )
     return lf
 
 
@@ -495,7 +503,9 @@ def _coerce_wide_numerics(wide: pl.DataFrame, index_cols: list[str]) -> pl.DataF
 def _dataset_names(lf: pl.LazyFrame) -> list[object]:
     """Distinct ``local_concept.dataset`` values in the scan (nulls included)."""
     names = (
-        _collect_streaming(lf.select(pl.col("dataset").unique())).get_column("dataset").to_list()
+        _collect_streaming(lf.select(pl.col("dataset").unique()))
+        .get_column("dataset")
+        .to_list()
     )
     return sorted(names, key=_dataset_key)
 
@@ -511,7 +521,9 @@ def _pivot_one_dataset(
     start = time.perf_counter()
     report(f"aggregate pivot dataset start name={name}")
     predicate = (
-        pl.col("dataset").is_null() if dataset_value is None else pl.col("dataset") == dataset_value
+        pl.col("dataset").is_null()
+        if dataset_value is None
+        else pl.col("dataset") == dataset_value
     )
     # Streaming dedupe straight off the on-disk spool: peak memory is this one
     # dataset's deduped long rows, never the cohort's whole long table.
@@ -584,7 +596,10 @@ def _finalize_dataset_frames(
     finalized: dict[str, pl.DataFrame] = {}
     for name, df in datasets.items():
         start = time.perf_counter()
-        report(f"aggregate finalize start name={name} shape={df.shape} size={_frame_mb(df)}")
+        report(
+            f"aggregate finalize start name={name} "
+            f"shape={df.shape} size={_frame_mb(df)}"
+        )
         ordered = _select_wide_columns(_sort_wide_rows(df), index_cols)
         finalized[name] = _coerce_wide_numerics(ordered, index_cols)
         report(
@@ -655,7 +670,9 @@ def _aggregate_cohorts(
         client._get_engine()  # type: ignore[attr-defined]
 
     worker_count = max(1, min(int(max_workers), len(cohorts)))
-    report(f"aggregate start driver={driver} cohorts={cohorts} workers={worker_count}")
+    report(
+        f"aggregate start driver={driver} cohorts={cohorts} workers={worker_count}"
+    )
     datasets: dict[str, pl.DataFrame] = {}
 
     if worker_count == 1:

@@ -78,14 +78,18 @@ def _check_dataframe(dataframe: str) -> str:
         DataAccessError: If ``dataframe`` is neither ``"pandas"`` nor ``"polars"``.
     """
     if dataframe not in _DATAFRAME_LIBS:
-        raise DataAccessError(f"Unsupported dataframe: {dataframe!r} (use 'pandas' or 'polars')")
+        raise DataAccessError(
+            f"Unsupported dataframe: {dataframe!r} (use 'pandas' or 'polars')"
+        )
     return dataframe
 
 
 def _check_driver(driver: str) -> str:
     """Validate a database-driver choice, returning it unchanged."""
     if driver not in _DATABASE_DRIVERS:
-        raise DataAccessError(f"Unsupported driver: {driver!r} (use 'sqlalchemy' or 'adbc')")
+        raise DataAccessError(
+            f"Unsupported driver: {driver!r} (use 'sqlalchemy' or 'adbc')"
+        )
     return driver
 
 
@@ -99,7 +103,10 @@ def _adbc_postgresql_uri(info: dict[str, Any], token: str) -> str:
         host = f"[{host}]"
     port = str(info.get("port") or "")
     authority = f"{host}:{port}" if port else host
-    return f"postgresql://{username}:{password}@{authority}/{database}?sslmode=disable"
+    return (
+        f"postgresql://{username}:{password}@{authority}/{database}"
+        "?sslmode=disable"
+    )
 
 
 def _load_adbc_dbapi() -> Any:
@@ -632,7 +639,9 @@ class DataAccessClient:
         the libpq URI as the password and is never logged.
         """
         adbc = _load_adbc_dbapi()
-        uri = _adbc_postgresql_uri(self._ensure_connection_info(), self._ensure_token())
+        uri = _adbc_postgresql_uri(
+            self._ensure_connection_info(), self._ensure_token()
+        )
         try:
             conn = adbc.connect(uri=uri, autocommit=True)
         except adbc.Error as exc:
@@ -773,7 +782,9 @@ class DataAccessClient:
                     if batches:
                         return pl.concat(batches, how="vertical_relaxed")
                     # No rows — a direct (empty) read yields the right schema.
-                    return pl.read_database(statement, connection=conn, execute_options=exec_opts)
+                    return pl.read_database(
+                        statement, connection=conn, execute_options=exec_opts
+                    )
                 return pd.read_sql_query(statement, con=conn, params=params)
         except SQLAlchemyError as exc:
             raise QueryError(f"Query failed: {exc}") from exc
@@ -855,7 +866,9 @@ class DataAccessClient:
 
         sql = qualify_statement(sql, self._ensure_access().schema)
         if self._driver == "adbc" and params:
-            raise QueryError("ADBC queries do not yet support bind parameters through this proxy")
+            raise QueryError(
+                "ADBC queries do not yet support bind parameters through this proxy"
+            )
         statement: Any = text(sql) if params else sql
 
         def _stream() -> Iterator[Any]:

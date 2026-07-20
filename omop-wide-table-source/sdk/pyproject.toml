@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cbr-data-access"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python SDK for authenticated data access to the CBR / datakaveri platform (Keycloak auth + managed PostgreSQL queries)."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,9 +24,9 @@ dependencies = [
     "requests>=2.31",
     "SQLAlchemy>=2.0",
     "psycopg2-binary>=2.9", # imported as `psycopg2`
-    "pandas>=2.0",          # core: query() returns DataFrames
-    "pyarrow>=14",          # parquet engine for download_views(file_format="parquet")
-    "polars>=1.0",          # aggregate(): spool/pivot on the streaming engine
+    "adbc-driver-postgresql[dbapi]==1.11.0",
+    "pandas>=2.0",          # query()/query_stream() can return pandas DataFrames
+    "polars>=1.0",          # query()/query_stream() can return polars DataFrames
     "sqlglot>=25",          # set_access(): qualifies bare table names in SQL
 ]
 

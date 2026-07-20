@@ -111,10 +111,11 @@ def build_authenticated_client(**sdk_kwargs):
     """Build a DataAccessClient from the API key Argo injects into the pod,
     instead of credentials stored in the pipeline config."""
     api_key = os.environ.get("API_KEY")
+    db_driver = "adbc"
     if not api_key:
         raise AuthenticationError("API_KEY is not set in this pod")
 
-    return DataAccessClient(api_key=api_key, **sdk_kwargs)
+    return DataAccessClient(api_key=api_key, driver=db_driver, **sdk_kwargs)
 
 
 DATASET_COLUMN = "dataset"
