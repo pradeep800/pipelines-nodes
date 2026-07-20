@@ -87,6 +87,18 @@ _INDEX_COLS = [
     "Assessment_Date",
 ]
 
+
+def index_columns(cohort: int | str | None = None) -> list[str]:
+    """Identity columns every wide frame is keyed by, in output order.
+
+    Mirrors the index :func:`aggregate` pivots on for the same ``cohort``
+    argument: a single-cohort export drops the constant ``Cohort`` column, a
+    full export leads with it. Callers stacking or joining frames across
+    datasets need these to tell identity columns from field columns.
+    """
+    return list(_INDEX_COLS) if cohort is not None else ["Cohort", *_INDEX_COLS]
+
+
 # Sentinel replaced (not str.format — the SQL may contain literal braces) with an
 # int cohort id by _long_sql_for. The id comes from AccessRequest.cohorts, so it is
 # always an int — injection-safe.
