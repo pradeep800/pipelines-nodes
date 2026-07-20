@@ -47,11 +47,11 @@ import polars as pl
 from boto3.s3.transfer import TransferConfig
 from botocore.client import Config
 from cbr_data_access import DataAccessClient
-from cbr_data_access.aggregate import COHORT_NAMES, aggregate, index_columns
+from cbr_data_access.aggregate import COHORT_NAMES, aggregate
 from cbr_data_access.exceptions import AuthenticationError, DataAccessError
 
 # Bump this on every code change so a run's logs prove which build is live.
-NODE_VERSION = "2026-07-21.2-index-columns"
+NODE_VERSION = "2026-07-21.3-local-index-cols"
 
 # The "All granted cohorts" row in the node.json select. A select option can't
 # carry an empty value, so "every cohort" travels as this sentinel rather than
@@ -119,6 +119,23 @@ def build_authenticated_client(**sdk_kwargs):
 
 
 DATASET_COLUMN = "dataset"
+
+# Identity columns aggregate() keys every wide frame by, in output order; a
+# single-cohort export drops the constant Cohort column. Mirrors the SDK's
+# private _INDEX_COLS — defined here so the vendored sdk/ stays an exact,
+# unpatched copy of the reference SDK.
+IDENTITY_COLUMNS = [
+    "Barcode",
+    "Subject_ID",
+    "Gender",
+    "Age_at_Visit",
+    "Visit",
+    "Assessment_Date",
+]
+
+
+def index_columns(cohort):
+    return list(IDENTITY_COLUMNS) if cohort is not None else ["Cohort", *IDENTITY_COLUMNS]
 
 
 def stack_datasets(frames, index_cols):
