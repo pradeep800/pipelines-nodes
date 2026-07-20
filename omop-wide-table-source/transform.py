@@ -51,7 +51,7 @@ from cbr_data_access.aggregate import COHORT_NAMES, aggregate, index_columns
 from cbr_data_access.exceptions import AuthenticationError, DataAccessError
 
 # Bump this on every code change so a run's logs prove which build is live.
-NODE_VERSION = "2026-07-15.2-wide-aggregate"
+NODE_VERSION = "2026-07-21.1-f64-coercion"
 
 # The "All granted cohorts" row in the node.json select. A select option can't
 # carry an empty value, so "every cohort" travels as this sentinel rather than
