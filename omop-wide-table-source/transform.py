@@ -52,7 +52,7 @@ from cbr_data_access.aggregate import COHORT_NAMES, aggregate
 from cbr_data_access.exceptions import AuthenticationError, DataAccessError
 
 # Bump this on every code change so a run's logs prove which build is live.
-NODE_VERSION = "2026-07-21.4-token-file-auth"
+NODE_VERSION = "2026-07-21.5-field-descriptions"
 
 # The "All granted cohorts" row in the node.json select. A select option can't
 # carry an empty value, so "every cohort" travels as this sentinel rather than

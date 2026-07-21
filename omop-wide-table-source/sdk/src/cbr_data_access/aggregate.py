@@ -113,7 +113,15 @@ _COHORT_SENTINEL = "__COHORT__"
 # row filters and local_concept), so whatever it serves is exportable.
 _LONG_SQL_TEMPLATE = """
 WITH concept_map AS (
-    SELECT concept_id, source_field_name, dataset
+    -- Wide-sheet column headers: the human-readable description, falling back
+    -- to the raw source field name when the description is missing/empty.
+    SELECT
+        concept_id,
+        COALESCE(
+            NULLIF(source_field_description, ''),
+            source_field_name
+        ) AS field_label,
+        dataset
     FROM local_concept
     WHERE cohort = __COHORT__
       AND concept_id IS NOT NULL
@@ -155,7 +163,7 @@ meas_long AS (
         m.person_id,
         m.visit_occurrence_id,
         cm.dataset,
-        cm.source_field_name                                          AS field_name,
+        cm.field_label                                                AS field_name,
         m.value_as_number::text                                       AS field_value
     FROM measurement m
     JOIN concept_map cm
@@ -169,7 +177,7 @@ obs_long AS (
         o.person_id,
         o.visit_occurrence_id,
         cm.dataset,
-        cm.source_field_name                                          AS field_name,
+        cm.field_label                                                AS field_name,
         o.value_as_string                                             AS field_value
     FROM observation o
     JOIN concept_map cm
