@@ -200,6 +200,39 @@ def test_cohort_filter_and_independent_baselines():
     check("P2 has its own baseline", float(out[out["Barcode"] == "P2"]["years_from_baseline"].iloc[0]), 0.0)
 
 
+def test_full_grid_matches_notebook_layout():
+    """The source notebook pads every participant to T1..max_tp with blank rows.
+
+    A downstream LOCF step needs those rows to tell 'attended but not measured'
+    apart from 'never attended'.
+    """
+    df = frame(
+        [
+            ("P1", "2020-01-01"),  # T1
+            ("P1", "2021-01-01"),  # T2
+            ("P1", "2022-01-01"),  # T3
+            ("P2", "2020-01-01"),  # T1 only
+        ]
+    )
+    out, _ = process(df, dict(BASE_CONFIG, emit_full_grid=True))
+
+    check("grid is rectangular", len(out), 6)  # 2 participants x 3 timepoints
+    for participant in ("P1", "P2"):
+        rows = out[out["Barcode"] == participant]
+        check(f"{participant} has every timepoint", list(rows["timepoint"]), ["T1", "T2", "T3"])
+
+    p2 = out[out["Barcode"] == "P2"]
+    check("P2 placeholders flagged", list(p2["is_placeholder"]), [False, True, True])
+    check("P2 placeholder dates are blank", int(p2["AppointmentDate"].isna().sum()), 2)
+    check("real visits not flagged as placeholder", int(out["is_placeholder"].sum()), 2)
+
+
+def test_full_grid_off_by_default():
+    df = frame([("P1", "2020-01-01"), ("P2", "2020-01-01"), ("P2", "2021-01-01")])
+    out, _ = process(df, dict(BASE_CONFIG))
+    check("no padding by default", len(out), 3)
+
+
 def test_leap_year_divisor():
     df = frame([("P1", "2020-01-01"), ("P1", "2024-01-01")])  # 1461 days
     out_365, _ = process(df, dict(BASE_CONFIG, days_per_year=365))

@@ -280,6 +280,49 @@ def assign_for_participant(
 # ---------------------------------------------------------------------------
 
 
+def add_placeholder_rows(
+    df: pd.DataFrame, participant_col: str, max_observed: int
+) -> pd.DataFrame:
+    """Pad every participant out to one row per timepoint, blank where absent.
+
+    A downstream last-observation-carried-forward step needs these rows: without
+    them there is no way to tell 'attended but the measure was not taken' from
+    'never attended'. The grid runs to the highest timepoint reached by ANY
+    participant, so every participant ends up with the same number of rows.
+    """
+    if max_observed < 1:
+        return df
+
+    present = {
+        (participant, int(tp))
+        for participant, tp in zip(df[participant_col], df["timepoint_index"])
+        if pd.notna(tp)
+    }
+
+    blanks = []
+    for participant in df[participant_col].unique():
+        for tp in range(1, max_observed + 1):
+            if (participant, tp) not in present:
+                blanks.append(
+                    {
+                        participant_col: participant,
+                        "timepoint": f"T{tp}",
+                        "timepoint_index": tp,
+                        "is_selected_visit": False,
+                        "is_placeholder": True,
+                    }
+                )
+
+    df = df.copy()
+    df["is_placeholder"] = False
+    if not blanks:
+        return df
+
+    padded = pd.concat([df, pd.DataFrame(blanks)], ignore_index=True)
+    padded["timepoint_index"] = padded["timepoint_index"].astype("Int64")
+    return padded.sort_values([participant_col, "timepoint_index"]).reset_index(drop=True)
+
+
 def process(df: pd.DataFrame, config: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
     participant_col = str(config.get("participant_column") or "Barcode").strip()
     date_col = str(config.get("date_column") or "AppointmentDate").strip()
@@ -356,6 +399,17 @@ def process(df: pd.DataFrame, config: dict) -> tuple[pd.DataFrame, pd.DataFrame]
     if drop_unassigned:
         df = df[df["is_selected_visit"]].copy()
         log(f"Dropped unassigned and superseded visits — {len(df)} row(s) remain")
+
+    if bool(config.get("emit_full_grid", False)):
+        max_observed = (
+            int(df["timepoint_index"].max()) if df["timepoint_index"].notna().any() else 0
+        )
+        before = len(df)
+        df = add_placeholder_rows(df, participant_col, max_observed)
+        log(
+            f"Padded to a full participant x timepoint grid (T1..T{max_observed}): "
+            f"{before} -> {len(df)} row(s), {len(df) - before} placeholder(s)"
+        )
 
     duplicates = pd.DataFrame(
         collision_rows,

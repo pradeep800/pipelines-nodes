@@ -19,22 +19,22 @@ containing at minimum:
 ## Outputs
 
 | Name | Contents |
-|---|---|
-| `timepoints` | Every input column, plus `years_from_baseline`, `timepoint` (`T1`, `T2`, …), `timepoint_index`, `is_selected_visit` |
+| --- | --- |
+| `timepoints` | Every input column, plus `years_from_baseline`, `timepoint` (`T1`, `T2`, …), `timepoint_index`, `is_selected_visit`, and `is_placeholder` when the full grid is enabled |
 | `duplicates` | One row per participant/timepoint collision: how many visits competed, their elapsed years and dates, and which was kept |
 
 ## Window schedules
 
 A schedule is expressed as:
 
-```
+```text
 T1            -> [0, t1_max]
 T2            -> [t2_min, t2_max]
 Tn  (n >= 3)  -> [(n-1)*interval - lower_margin, (n-1)*interval + upper_margin]
 ```
 
 | Schedule | T1 | T2 | Tn (n ≥ 3) |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | TLSA (annual) | ≤ 0.74y | 0.75–1.50y | n−1.49 … n−0.50 |
 | SANSCOG (biennial) | ≤ 1.49y | 1.50–3.00y | 2n−2.9 … 2n−1.0 |
 | Custom | your `t1_max` | your `t2_min`/`t2_max` | your interval and margins |
@@ -61,3 +61,10 @@ built-in schedules reproduce the original notebook's `get_tp()` exactly.
 - **Nothing is silently dropped.** Visits falling in a gap between windows and
   losing visits from a collision are counted in the logs; turn off
   *Drop unassigned visits* to keep them in the output with a blank timepoint.
+- **Turn on *Emit a row for every timepoint* if a LOCF step follows.** The source
+  notebook pads every participant to one row per timepoint (T1 up to the highest
+  timepoint any participant reached), blank where they did not attend, and flags
+  them in `is_placeholder`. `Filling_Missing_Values.ipynb` depends on that shape —
+  it splits real visits from placeholders on `AppointmentDate.notna()`. Without
+  the padding, "this participant missed T2" is not representable in the output.
+  Off by default, because the grid is surprising output for any other consumer.

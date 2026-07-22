@@ -137,6 +137,14 @@
             "order": 12,
             "placeholder": "{\"interval_years\": 1, \"t1_max\": 0.74, \"t2_min\": 0.75, \"t2_max\": 1.5, \"lower_margin\": 0.49, \"upper_margin\": 0.5}"
         },
+        "emit_full_grid": {
+            "type": "boolean",
+            "label": "Emit a row for every timepoint",
+            "description": "Pad each participant out to one row per timepoint, blank where they did not attend, so missed visits are visible as empty rows rather than absent ones. Required by a downstream last-observation-carried-forward step, which distinguishes 'attended but not measured' from 'never attended'.",
+            "required": false,
+            "default": false,
+            "order": 14
+        },
         "drop_unassigned": {
             "type": "boolean",
             "label": "Drop unassigned visits",
