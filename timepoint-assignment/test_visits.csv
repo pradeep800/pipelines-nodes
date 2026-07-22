@@ -1,0 +1,25 @@
+Barcode,Project,AppointmentDate,AgeAtVisit,Gender,education_years,hmse_total,_note
+P1,TLSA,2020-01-01,72.0,F,8,26,baseline
+P1,TLSA,2021-07-09,73.5,F,8,25,PDF: lands in T3
+P1,TLSA,2023-02-02,75.1,F,8,23,PDF: lands in T4
+P2,TLSA,2020-01-01,68.0,M,12,27,baseline
+P2,TLSA,2022-10-01,70.8,M,12,24,"PDF: lands in T4, skipping T2 and T3"
+P3,TLSA,2020-01-01,75.0,F,5,26,baseline
+P3,TLSA,2020-12-13,76.0,F,5,25,PDF: lands in T2
+P3,TLSA,2022-03-21,77.2,F,5,23,PDF: lands in T3
+P4,TLSA,2020-01-01,81.0,M,0,25,baseline
+P4,TLSA,2023-09-20,84.7,M,0,21,PDF: past T4; becomes T5 unless timepoints are capped
+P4,TLSA,2024-11-27,85.9,M,0,19,PDF: past T4; becomes T6 unless timepoints are capped
+P5,TLSA,2020-01-01,66.0,F,15,28,baseline
+P5,TLSA,2020-04-20,66.3,F,15,27,collides with baseline inside the T1 window
+P5,TLSA,2021-02-06,67.1,F,15,26,lands in T2
+P6,TLSA,2020-01-01,70.0,M,10,27,baseline
+P6,TLSA,2020-09-23,70.7,M,10,26,late but still T1; promoted to T2 only if promotion is on
+P6,TLSA,2021-12-31,72.0,M,10,25,lands in T3
+P7,TLSA,2020-01-01,79.0,F,7,25,baseline
+P7,TLSA,,,F,7,,"missing date; should be dropped, not crash"
+P8,SANSCOG,2020-01-01,64.0,M,4,28,baseline
+P8,SANSCOG,2022-02-05,66.1,M,4,26,SANSCOG T2 window is 1.50-3.00
+P8,SANSCOG,2024-03-13,68.2,M,4,23,SANSCOG T3 window is 3.10-5.00
+P9,SANSCOG,2020-01-01,77.0,F,2,25,baseline
+P9,SANSCOG,2025-12-30,83.0,F,2,19,SANSCOG T4 window is 5.10-7.00
