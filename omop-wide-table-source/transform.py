@@ -52,7 +52,7 @@ from cbr_data_access.aggregate import COHORT_NAMES, aggregate
 from cbr_data_access.exceptions import AuthenticationError, DataAccessError
 
 # Bump this on every code change so a run's logs prove which build is live.
-NODE_VERSION = "2026-07-22.3-sdk-submodule"
+NODE_VERSION = "2026-07-22.4-source-field-param"
 
 # The "All granted cohorts" row in the node.json select. A select option can't
 # carry an empty value, so "every cohort" travels as this sentinel rather than
@@ -255,7 +255,14 @@ def main():
                 # surfaces its phase timing, which is the only output during a
                 # pull that can run for minutes.
                 t0 = time.monotonic()
-                frames = aggregate(client, cohort, progress=log)
+                # source_field picks the wide-column labels; the SDK default is
+                # the raw source_field_name, this export wants descriptions.
+                frames = aggregate(
+                    client,
+                    cohort,
+                    source_field="source_field_description",
+                    progress=log,
+                )
                 log(f"Aggregate complete in {time.monotonic() - t0:.1f}s; "
                     f"datasets: {sorted(frames)}")
 
