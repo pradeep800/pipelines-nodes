@@ -1,0 +1,167 @@
+{
+    "version": "1.0",
+    "nodeType": "processing",
+    "name": "Visit Timepoint Assignment",
+    "shortDescription": "Convert longitudinal visit dates into study timepoints (T1, T2, ...) using CBR TLSA/SANSCOG window rules.",
+    "description": "Takes a longitudinal cohort table with one row per visit and assigns each visit a study timepoint. For every participant the earliest visit becomes the baseline; each later visit's elapsed time from baseline is matched against the cohort's timepoint window schedule (TLSA: annual, SANSCOG: biennial). When several visits fall in the same window, one is kept according to the chosen rule and the collision is reported. Emits the timepointed table plus a duplicate-visit QC report.",
+    "githubUrl": "https://github.com/REPLACE_ME/cbr-custom-nodes",
+    "githubRef": "main",
+    "lucideIcon": "CalendarClock",
+    "color": "#2F6F4E",
+    "hasInput": true,
+    "inputDescription": "One tabular file (parquet, csv or xlsx) with one row per visit. Must contain a participant identifier column and a visit date column.",
+    "config": {
+        "name": {
+            "type": "string",
+            "label": "Name",
+            "description": "Unique identifier for this node in the pipeline",
+            "required": true,
+            "unique": true,
+            "placeholder": "e.g. assign_timepoints",
+            "validation": {
+                "patternKey": "snake_case"
+            }
+        },
+        "scheme": {
+            "type": "select",
+            "label": "Timepoint schedule",
+            "description": "Visit window schedule to apply. TLSA follows the annual schedule and SANSCOG the biennial schedule from the CBR protocol. Choose Custom to enter your own window bounds below.",
+            "required": true,
+            "default": "TLSA",
+            "order": 2,
+            "options": [
+                { "value": "TLSA", "label": "TLSA (annual)" },
+                { "value": "SANSCOG", "label": "SANSCOG (biennial)" },
+                { "value": "custom", "label": "Custom windows" }
+            ]
+        },
+        "participant_column": {
+            "type": "string",
+            "label": "Participant ID column",
+            "description": "Column identifying the participant. Baseline and timepoints are computed independently within each participant.",
+            "required": true,
+            "default": "Barcode",
+            "placeholder": "e.g. Barcode",
+            "order": 3
+        },
+        "date_column": {
+            "type": "string",
+            "label": "Visit date column",
+            "description": "Column holding the visit date. Rows with an unparseable or missing date are dropped and counted in the log.",
+            "required": true,
+            "default": "AppointmentDate",
+            "placeholder": "e.g. AppointmentDate",
+            "order": 4
+        },
+        "cohort_column": {
+            "type": "string",
+            "label": "Cohort column",
+            "description": "Optional. If set together with Cohort value, rows are filtered to that cohort before assignment — this replaces a separate split step.",
+            "required": false,
+            "placeholder": "e.g. Project",
+            "order": 5
+        },
+        "cohort_value": {
+            "type": "string",
+            "label": "Cohort value",
+            "description": "Optional. Keep only rows whose cohort column equals this value (e.g. TLSA or SANSCOG). Ignored if Cohort column is blank.",
+            "required": false,
+            "placeholder": "e.g. TLSA",
+            "order": 6
+        },
+        "collision_rule": {
+            "type": "select",
+            "label": "When two visits land in one window",
+            "description": "Which visit to keep when a participant has more than one visit inside the same timepoint window. Applies from T2 onward — T1 is always the participant's earliest visit, since that is what defines the baseline. Every collision is reported in the duplicates output regardless of this setting.",
+            "required": true,
+            "default": "latest",
+            "order": 7,
+            "options": [
+                { "value": "latest", "label": "Keep the latest visit" },
+                { "value": "earliest", "label": "Keep the earliest visit" },
+                { "value": "closest", "label": "Keep the visit closest to the ideal window centre" }
+            ]
+        },
+        "promote_late_baseline": {
+            "type": "boolean",
+            "label": "Promote a late baseline visit to T2",
+            "description": "If a participant has no visit in the T2 window but has a late T1 visit near the T2 boundary, relabel that visit as T2. Only applies when the participant has a separate, earlier visit still serving as T1.",
+            "required": false,
+            "default": false,
+            "order": 8
+        },
+        "promote_window_fraction": {
+            "type": "number",
+            "label": "Late-baseline promotion band",
+            "description": "How close to the T1/T2 boundary a visit must be to qualify for promotion, as a fraction of the T1 window. 0.95 means the last 5% of the T1 window. Only used when promotion is enabled.",
+            "required": false,
+            "default": 0.95,
+            "order": 9,
+            "validation": {
+                "minimum": 0.5,
+                "maximum": 1,
+                "step": 0.01
+            }
+        },
+        "days_per_year": {
+            "type": "number",
+            "label": "Days per year",
+            "description": "Divisor used to convert elapsed days into years. Use 365.25 to account for leap years, or 365 to reproduce the original analysis exactly.",
+            "required": true,
+            "default": 365.25,
+            "order": 10,
+            "validation": {
+                "minimum": 360,
+                "maximum": 366,
+                "step": 0.01
+            }
+        },
+        "max_timepoints": {
+            "type": "number",
+            "label": "Maximum timepoints",
+            "description": "Upper bound on how many timepoints to search for. Visits beyond the last window are left unassigned and reported in the log.",
+            "required": true,
+            "default": 20,
+            "order": 11,
+            "validation": {
+                "minimum": 1,
+                "maximum": 100,
+                "integer": true
+            }
+        },
+        "custom_windows": {
+            "type": "json",
+            "label": "Custom window definition",
+            "description": "Only used when Timepoint schedule is Custom. Object with keys: interval_years, t1_max, t2_min, t2_max, lower_margin, upper_margin. Timepoint n (n>=3) covers [(n-1)*interval - lower_margin, (n-1)*interval + upper_margin].",
+            "required": false,
+            "order": 12,
+            "placeholder": "{\"interval_years\": 1, \"t1_max\": 0.74, \"t2_min\": 0.75, \"t2_max\": 1.5, \"lower_margin\": 0.49, \"upper_margin\": 0.5}"
+        },
+        "drop_unassigned": {
+            "type": "boolean",
+            "label": "Drop unassigned visits",
+            "description": "Remove visits that fall outside every window and losing visits from a collision. Leave off to keep them with a blank timepoint so nothing is silently lost.",
+            "required": false,
+            "default": true,
+            "order": 13
+        }
+    },
+    "hasOutput": true,
+    "outputDescription": "Timepointed visit table, plus a QC report of visits that collided within a window.",
+    "outputFiles": [
+        {
+            "name": "timepoints",
+            "path": "{{artifacts}}/{{pipeline.name}}/{{execution.timestamp}}/{{node.name}}/timepoints.parquet"
+        },
+        {
+            "name": "duplicates",
+            "path": "{{artifacts}}/{{pipeline.name}}/{{execution.timestamp}}/{{node.name}}/duplicate_timepoints.parquet"
+        }
+    ],
+    "implementation": {
+        "type": "container",
+        "entrypoint": "python main.py",
+        "dockerfilePath": "timepoint-assignment/Dockerfile",
+        "dockerContext": "timepoint-assignment"
+    }
+}
