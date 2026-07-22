@@ -113,19 +113,15 @@ _COHORT_SENTINEL = "__COHORT__"
 # row filters and local_concept), so whatever it serves is exportable.
 _LONG_SQL_TEMPLATE = """
 WITH concept_map AS (
-    -- Wide-sheet column headers: the human-readable description, falling back
-    -- to the raw source field name when the description is missing/empty.
+    -- Wide-sheet column headers use the human-readable description.
     SELECT
         concept_id,
-        COALESCE(
-            NULLIF(source_field_description, ''),
-            source_field_name
-        ) AS field_label,
+        source_field_description AS field_label,
         dataset
     FROM local_concept
     WHERE cohort = __COHORT__
       AND concept_id IS NOT NULL
-      AND source_field_name IS NOT NULL
+      AND source_field_description IS NOT NULL
 ),
 person_base AS MATERIALIZED (
     SELECT

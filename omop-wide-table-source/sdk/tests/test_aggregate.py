@@ -18,6 +18,15 @@ def test_long_sql_uses_canonical_typed_value_columns() -> None:
     assert "COALESCE(o.value_source_value" not in sql
 
 
+def test_long_sql_uses_source_field_description_without_fallback() -> None:
+    sql = " ".join(_long_sql_for(101).split())
+
+    assert "source_field_description AS field_label" in sql
+    assert "source_field_description IS NOT NULL" in sql
+    assert "NULLIF(source_field_description" not in sql
+    assert "source_field_name" not in sql
+
+
 def test_coerce_wide_numerics_casts_only_lossless_fields() -> None:
     frame = pl.DataFrame(
         {
