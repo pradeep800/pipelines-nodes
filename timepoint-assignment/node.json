@@ -4,7 +4,7 @@
     "name": "Visit Timepoint Assignment",
     "shortDescription": "Convert longitudinal visit dates into study timepoints (T1, T2, ...) using CBR TLSA/SANSCOG window rules.",
     "description": "Takes a longitudinal cohort table with one row per visit and assigns each visit a study timepoint. For every participant the earliest visit becomes the baseline; each later visit's elapsed time from baseline is matched against the cohort's timepoint window schedule (TLSA: annual, SANSCOG: biennial). When several visits fall in the same window, one is kept according to the chosen rule and the collision is reported. Emits the timepointed table plus a duplicate-visit QC report.",
-    "githubUrl": "https://github.com/REPLACE_ME/cbr-custom-nodes",
+    "githubUrl": "https://github.com/pradeep800/pipelines-nodes",
     "githubRef": "main",
     "lucideIcon": "CalendarClock",
     "color": "#2F6F4E",
@@ -169,7 +169,7 @@
     "implementation": {
         "type": "container",
         "entrypoint": "python main.py",
-        "dockerfilePath": "timepoint-assignment/Dockerfile",
+        "dockerfilePath": "Dockerfile",
         "dockerContext": "timepoint-assignment"
     }
 }
