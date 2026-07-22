@@ -52,7 +52,7 @@ from cbr_data_access.aggregate import COHORT_NAMES, aggregate
 from cbr_data_access.exceptions import AuthenticationError, DataAccessError
 
 # Bump this on every code change so a run's logs prove which build is live.
-NODE_VERSION = "2026-07-22.2-scrub-stale-sdk-build"
+NODE_VERSION = "2026-07-22.3-sdk-submodule"
 
 # The "All granted cohorts" row in the node.json select. A select option can't
 # carry an empty value, so "every cohort" travels as this sentinel rather than

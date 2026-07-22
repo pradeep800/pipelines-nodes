@@ -8,10 +8,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN pip install --no-cache-dir uv
 
-COPY sdk/ ./sdk/
-# The vendored sdk ships a committed, stale build/lib snapshot; setuptools
-# reuses it as the wheel staging dir and silently packages the old code.
-# Scrub it so the wheel is always built from sdk/src.
+# sdk/ is the cbr-data-access-ipynb-sdk submodule; only its py-sdk is used.
+COPY sdk/py-sdk/ ./sdk/
+# Scrub any build artifacts before installing: setuptools reuses a stale
+# build/lib as the wheel staging dir and silently packages old code.
 RUN rm -rf ./sdk/build ./sdk/dist ./sdk/src/*.egg-info \
     && uv pip install --system --no-cache ./sdk/ boto3
 
