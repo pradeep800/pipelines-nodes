@@ -8,8 +8,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN pip install --no-cache-dir uv
 
-# sdk/ is the cbr-data-access-ipynb-sdk submodule; only its py-sdk is used.
-COPY sdk/py-sdk/ ./sdk/
+# sdk/ is the committed copy of the upstream sdk's py-sdk (the node builder
+# clones without submodules, so the build can't see sdk-upstream/). Refresh it
+# with ./sync-sdk.sh, never by hand.
+COPY sdk/ ./sdk/
 # Scrub any build artifacts before installing: setuptools reuses a stale
 # build/lib as the wheel staging dir and silently packages old code.
 RUN rm -rf ./sdk/build ./sdk/dist ./sdk/src/*.egg-info \
