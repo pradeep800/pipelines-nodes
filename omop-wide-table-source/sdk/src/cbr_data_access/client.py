@@ -526,10 +526,11 @@ class DataAccessClient:
         :func:`cbr_data_access.aggregate.aggregate`.
 
         Args:
-            cohort: A single cohort to export, by id (``101``) or name
-                (``"SANSCOG"``, ``"TLSA"``); drops the ``Cohort`` column.
-                ``None`` exports every granted cohort with a ``Cohort`` column
-                carrying the cohort names.
+            cohort: A single cohort to export, by id (``101``) or by its name
+                in the request's ``cohort_mappings`` table (e.g. ``"SANSCOG"``,
+                ``"TLSA"``); drops the ``Cohort`` column. ``None`` exports every
+                granted cohort that is active in ``cohort_mappings`` with a
+                ``Cohort`` column carrying the cohort names.
             gender_male / gender_female: Gender concept ids used to label rows.
             source_field: Local-concept column used first for wide-sheet headers.
                 Defaults to ``"source_field_name"``; choose

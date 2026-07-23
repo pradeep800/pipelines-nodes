@@ -5,9 +5,52 @@ import pytest
 
 from cbr_data_access.aggregate import (
     _coerce_wide_numerics,
+    _cohort_mappings_sql,
+    _fetch_cohort_names,
     _finalize_dataset_frames,
     _long_sql_for,
+    _resolve_cohort_id,
 )
+
+_COHORT_NAMES = {101: "SANSCOG", 102: "TLSA"}
+
+
+def test_cohort_mappings_sql_selects_active_cohorts_for_the_cbr_org() -> None:
+    sql = _cohort_mappings_sql()
+
+    assert "FROM cohort_mappings" in sql
+    assert "is_active" in sql
+    assert "org_name = 'Centre for Brain Research'" in sql
+    # Org names are inlined as escaped literals, never raw.
+    assert "org_name = 'O''Brien'" in _cohort_mappings_sql("O'Brien")
+
+
+def test_fetch_cohort_names_reads_the_registry_through_the_client() -> None:
+    class FakeClient:
+        def query(self, sql: str, *, dataframe: str) -> pl.DataFrame:
+            assert dataframe == "polars"
+            assert "cohort_mappings" in sql
+            return pl.DataFrame({"cohort_id": [101, 102], "cohort_name": ["SANSCOG", "TLSA"]})
+
+    assert _fetch_cohort_names(FakeClient()) == _COHORT_NAMES
+
+
+def test_fetch_cohort_names_wraps_query_failures() -> None:
+    class FailingClient:
+        def query(self, sql: str, *, dataframe: str) -> pl.DataFrame:
+            raise RuntimeError("relation does not exist")
+
+    with pytest.raises(RuntimeError, match="cohort_mappings"):
+        _fetch_cohort_names(FailingClient())
+
+
+def test_resolve_cohort_id_accepts_ids_id_strings_and_registry_names() -> None:
+    assert _resolve_cohort_id(101, _COHORT_NAMES) == 101
+    assert _resolve_cohort_id("102", _COHORT_NAMES) == 102
+    assert _resolve_cohort_id("SANSCOG", _COHORT_NAMES) == 101
+    assert _resolve_cohort_id("TLSA", _COHORT_NAMES) == 102
+    with pytest.raises(ValueError, match="Unknown cohort name"):
+        _resolve_cohort_id("Gryffindor", _COHORT_NAMES)
 
 
 def test_long_sql_uses_canonical_typed_value_columns() -> None:

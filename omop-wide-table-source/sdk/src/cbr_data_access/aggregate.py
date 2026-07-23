@@ -52,28 +52,59 @@ from ._sql import qualify_statement
 GENDER_CONCEPT_ID_MALE = 8507
 GENDER_CONCEPT_ID_FEMALE = 8532
 
-# Hardcoded cohort registry, mirroring the reference exporter's
-# COHORT_SCHEMA_MAPS = {"SANSCOG": "cohort_101_data", "TLSA": "cohort_102_data"}:
-# the grant hands us the numeric id of each cohort_<id>_data schema, and the
-# exported ``Cohort`` column carries the name. Ids without an entry fall back
-# to the bare id string, so a newly granted cohort still exports.
-COHORT_NAMES: dict[int, str] = {
-    101: "SANSCOG",
-    102: "TLSA",
-}
-_COHORT_NAME_BY_ID = {str(i): name for i, name in COHORT_NAMES.items()}
-_COHORT_ID_BY_NAME = {name: i for i, name in COHORT_NAMES.items()}
+# Cohort registry: id -> display name for the exported ``Cohort`` column,
+# read at aggregate time from the request's ``cohort_mappings`` table. Only
+# rows with ``is_active`` and this organization participate in aggregation
+# (currently 101 SANSCOG and 102 TLSA). This replaces the old hardcoded
+# ``{101: "SANSCOG", 102: "TLSA"}`` map, so a newly activated cohort exports
+# under its proper name without an SDK release.
+COHORT_ORG_NAME = "Centre for Brain Research"
 
 
-def _resolve_cohort_id(cohort: int | str) -> int:
-    """Accept a cohort as an id (``101``) or a hardcoded name (``"SANSCOG"``)."""
+def _cohort_mappings_sql(org_name: str = COHORT_ORG_NAME) -> str:
+    """Registry SELECT with the org inlined as an escaped string literal.
+
+    A literal rather than a bind parameter keeps the query valid on the ADBC
+    path, which accepts no bind parameters through the proxy.
+    """
+    literal = org_name.replace("'", "''")
+    return (
+        "SELECT cohort_id, cohort_name FROM cohort_mappings "
+        f"WHERE is_active AND org_name = '{literal}'"
+    )
+
+
+def _fetch_cohort_names(client: object) -> dict[int, str]:
+    """Read the active cohort registry (id -> name) through the client/proxy.
+
+    Raises:
+        RuntimeError: If ``cohort_mappings`` cannot be queried (e.g. the table
+            is not granted by the access request).
+    """
+    try:
+        frame = client.query(_cohort_mappings_sql(), dataframe="polars")  # type: ignore[attr-defined]
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not read the cohort_mappings table "
+            f"(is it granted by your access request?): {exc}"
+        ) from exc
+    return {
+        int(cohort_id): str(name)
+        for cohort_id, name in zip(frame["cohort_id"], frame["cohort_name"])
+        if cohort_id is not None and name is not None
+    }
+
+
+def _resolve_cohort_id(cohort: int | str, cohort_names: dict[int, str]) -> int:
+    """Accept a cohort as an id (``101``) or an active registry name (``"SANSCOG"``)."""
     if isinstance(cohort, str) and not cohort.strip().isdigit():
         name = cohort.strip()
-        if name not in _COHORT_ID_BY_NAME:
+        ids_by_name = {n: i for i, n in cohort_names.items()}
+        if name not in ids_by_name:
             raise ValueError(
-                f"Unknown cohort name {name!r}; known names: {sorted(_COHORT_ID_BY_NAME)}"
+                f"Unknown cohort name {name!r}; active cohorts: {sorted(ids_by_name)}"
             )
-        return _COHORT_ID_BY_NAME[name]
+        return ids_by_name[name]
     return int(cohort)
 
 
@@ -431,17 +462,18 @@ def _spool_long_parquet(
         raise
 
 
-def _scan_long_spool(spool_dir: str) -> pl.LazyFrame:
+def _scan_long_spool(spool_dir: str, cohort_names: dict[int, str]) -> pl.LazyFrame:
     """Lazily scan a spooled long pull (directory of Parquet part files).
 
     Column types are already right in the spool; the only transform is swapping
-    the numeric ``Cohort`` id for its :data:`COHORT_NAMES` name. Returns a
+    the numeric ``Cohort`` id for its ``cohort_names`` registry name. Returns a
     LazyFrame so downstream dedupe/pivot can run on the streaming engine
     without materializing the whole spool.
     """
     lf = pl.scan_parquet(os.path.join(spool_dir, "*.parquet"))
-    if "Cohort" in lf.collect_schema().names():
-        lf = lf.with_columns(pl.col("Cohort").cast(pl.String).replace(_COHORT_NAME_BY_ID))
+    name_by_id = {str(i): name for i, name in cohort_names.items()}
+    if name_by_id and "Cohort" in lf.collect_schema().names():
+        lf = lf.with_columns(pl.col("Cohort").cast(pl.String).replace(name_by_id))
     return lf
 
 
@@ -470,6 +502,7 @@ def _fetch_long_one(
     straight off the spool instead (see :func:`_fetch_pivoted_cohort`) so it
     never pays this memory cost.
     """
+    cohort_names = _fetch_cohort_names(client)
     spool_dir = _spool_long_parquet(
         client,
         cohort=cohort,
@@ -480,7 +513,7 @@ def _fetch_long_one(
     )
     try:
         parse_start = time.perf_counter()
-        frame = _scan_long_spool(spool_dir).collect()
+        frame = _scan_long_spool(spool_dir, cohort_names).collect()
         report(
             f"aggregate parse done cohort={cohort} "
             f"seconds={time.perf_counter() - parse_start:.1f} shape={frame.shape}"
@@ -635,6 +668,7 @@ def _fetch_pivoted_cohort(
     client: object,
     *,
     cohort: int,
+    cohort_names: dict[int, str],
     gender_male: int,
     gender_female: int,
     source_field: SourceField,
@@ -660,7 +694,7 @@ def _fetch_pivoted_cohort(
         report=report,
     )
     try:
-        lf = _scan_long_spool(spool_dir)
+        lf = _scan_long_spool(spool_dir, cohort_names)
         if drop_cohort:
             lf = lf.drop("Cohort")
         datasets = _pivot_datasets(lf, index_cols, report=report)
@@ -677,6 +711,7 @@ def _aggregate_cohorts(
     client: object,
     cohorts: list[int],
     *,
+    cohort_names: dict[int, str],
     gender_male: int,
     gender_female: int,
     source_field: SourceField,
@@ -705,6 +740,7 @@ def _aggregate_cohorts(
                     _fetch_pivoted_cohort(
                         client,
                         cohort=cohort,
+                        cohort_names=cohort_names,
                         gender_male=gender_male,
                         gender_female=gender_female,
                         source_field=source_field,
@@ -726,6 +762,7 @@ def _aggregate_cohorts(
                 _fetch_pivoted_cohort,
                 client,
                 cohort=cohort,
+                cohort_names=cohort_names,
                 gender_male=gender_male,
                 gender_female=gender_female,
                 source_field=source_field,
@@ -776,11 +813,12 @@ def aggregate(
         client: A :class:`~cbr_data_access.client.DataAccessClient` (resolves the
             request automatically; with several approved requests pin one via
             ``client.set_access(...)`` first).
-        cohort: A single cohort to export, by id (``101``) or hardcoded name
-            (``"SANSCOG"``, ``"TLSA"`` — see :data:`COHORT_NAMES`). The ``Cohort``
-            column is dropped from the sheets, and only that cohort is queried.
-            ``None`` (default) exports every granted cohort and prepends a
-            ``Cohort`` column carrying the cohort names.
+        cohort: A single cohort to export, by id (``101``) or by its name in the
+            request's ``cohort_mappings`` table (e.g. ``"SANSCOG"``, ``"TLSA"``).
+            The ``Cohort`` column is dropped from the sheets, and only that
+            cohort is queried. ``None`` (default) exports every granted cohort
+            that is active in ``cohort_mappings`` and prepends a ``Cohort``
+            column carrying the cohort names.
         gender_male / gender_female: Gender concept ids used to label ``Gender``.
         source_field: Local-concept column used first for wide-sheet headers:
             ``"source_field_name"`` (default) or
@@ -793,33 +831,50 @@ def aggregate(
             fetch phase alone can run for minutes with no other output.
 
     Raises:
-        RuntimeError: If the request grants no cohorts, or the query returns no rows.
+        RuntimeError: If ``cohort_mappings`` cannot be read, the request grants
+            no active cohorts, or the query returns no rows.
+        ValueError: If ``cohort`` names an unknown or inactive cohort.
     """
     source_field = _check_source_field(source_field)
+    report = _progress_reporter(progress)
+    # The cohort registry (id -> name) comes from the request's cohort_mappings
+    # table; only cohorts active there for this org participate in aggregation.
+    cohort_names = _fetch_cohort_names(client)
     # A single-cohort export drops the Cohort column (it's constant); a full
     # export keeps it as the leading identity column so same-barcode rows from
     # different cohorts stay distinct through the pivot.
     if cohort is not None:
-        cohorts = [_resolve_cohort_id(cohort)]
+        cohort_id = _resolve_cohort_id(cohort, cohort_names)
+        if cohort_id not in cohort_names:
+            raise ValueError(
+                f"Cohort {cohort_id} is not an active {COHORT_ORG_NAME} cohort; "
+                f"active cohorts: {sorted(cohort_names)}"
+            )
+        cohorts = [cohort_id]
         drop_cohort = True
         index_cols = list(_INDEX_COLS)
     else:
-        cohorts = list(client._ensure_access().cohorts)  # type: ignore[attr-defined]
+        granted = list(client._ensure_access().cohorts)  # type: ignore[attr-defined]
+        cohorts = [c for c in granted if c in cohort_names]
+        skipped = sorted(set(granted) - set(cohorts))
+        if skipped:
+            report(f"aggregate skipping granted but inactive cohorts: {skipped}")
         drop_cohort = False
         index_cols = ["Cohort", *_INDEX_COLS]
     if not cohorts:
-        raise RuntimeError("The access request grants no cohorts.")
+        raise RuntimeError(f"The access request grants no active {COHORT_ORG_NAME} cohorts.")
 
     datasets = _aggregate_cohorts(
         client,
         cohorts,
+        cohort_names=cohort_names,
         gender_male=gender_male,
         gender_female=gender_female,
         source_field=source_field,
         index_cols=index_cols,
         drop_cohort=drop_cohort,
         max_workers=max_workers,
-        progress=progress,
+        progress=report,
     )
     if not datasets:
         raise RuntimeError("No data returned for the granted cohort(s).")

@@ -200,6 +200,7 @@ def test_adbc_aggregate_does_not_initialize_sqlalchemy_engine(
     result = aggregate_module._aggregate_cohorts(
         client,
         [101],
+        cohort_names={101: "SANSCOG"},
         gender_male=8507,
         gender_female=8532,
         source_field="source_field_name",
