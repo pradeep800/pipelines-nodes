@@ -48,11 +48,11 @@ import polars as pl
 from boto3.s3.transfer import TransferConfig
 from botocore.client import Config
 from cbr_data_access import DataAccessClient
-from cbr_data_access.aggregate import COHORT_NAMES, aggregate
+from cbr_data_access.aggregate import aggregate
 from cbr_data_access.exceptions import AuthenticationError, DataAccessError
 
 # Bump this on every code change so a run's logs prove which build is live.
-NODE_VERSION = "2026-07-22.5-committed-sdk-copy"
+NODE_VERSION = "2026-07-23.1-cohorts-from-registry"
 
 # The "All granted cohorts" row in the node.json select. A select option can't
 # carry an empty value, so "every cohort" travels as this sentinel rather than
@@ -97,15 +97,10 @@ def parse_cohort(raw):
     """
     if raw is None or not str(raw).strip() or str(raw).strip() == ALL_COHORTS:
         return None
-    cohort = str(raw).strip()
-    # aggregate() accepts an id or a known name; ids arrive as strings from the
-    # select, and it only resolves names from COHORT_NAMES, so an unknown name
-    # would fail deep in the pull. Reject it here with the valid set instead.
-    if not cohort.isdigit() and cohort not in COHORT_NAMES.values():
-        raise ValueError(
-            f"Unknown cohort {cohort!r}; known names: {sorted(COHORT_NAMES.values())}"
-        )
-    return cohort
+    # aggregate() accepts an id or a name and resolves names against the live
+    # cohort_mappings registry before any heavy pull, raising ValueError with
+    # the active set — no local validation to do here.
+    return str(raw).strip()
 
 
 def build_authenticated_client(**sdk_kwargs):
