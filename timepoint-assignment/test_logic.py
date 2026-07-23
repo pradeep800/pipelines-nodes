@@ -200,45 +200,39 @@ def test_cohort_filter_and_independent_baselines():
     check("P2 has its own baseline", float(out[out["Barcode"] == "P2"]["years_from_baseline"].iloc[0]), 0.0)
 
 
-def test_full_grid_matches_notebook_layout():
-    """The source notebook pads every participant to T1..max_tp with blank rows.
-
-    A downstream LOCF step needs those rows to tell 'attended but not measured'
-    apart from 'never attended'.
-    """
-    df = frame(
-        [
-            ("P1", "2020-01-01"),  # T1
-            ("P1", "2021-01-01"),  # T2
-            ("P1", "2022-01-01"),  # T3
-            ("P2", "2020-01-01"),  # T1 only
-        ]
-    )
-    out, _ = process(df, dict(BASE_CONFIG, emit_full_grid=True))
-
-    check("grid is rectangular", len(out), 6)  # 2 participants x 3 timepoints
-    for participant in ("P1", "P2"):
-        rows = out[out["Barcode"] == participant]
-        check(f"{participant} has every timepoint", list(rows["timepoint"]), ["T1", "T2", "T3"])
-
-    p2 = out[out["Barcode"] == "P2"]
-    check("P2 placeholders flagged", list(p2["is_placeholder"]), [False, True, True])
-    check("P2 placeholder dates are blank", int(p2["AppointmentDate"].isna().sum()), 2)
-    check("real visits not flagged as placeholder", int(out["is_placeholder"].sum()), 2)
-
-
-def test_full_grid_off_by_default():
-    df = frame([("P1", "2020-01-01"), ("P2", "2020-01-01"), ("P2", "2021-01-01")])
-    out, _ = process(df, dict(BASE_CONFIG))
-    check("no padding by default", len(out), 3)
-
-
 def test_leap_year_divisor():
     df = frame([("P1", "2020-01-01"), ("P1", "2024-01-01")])  # 1461 days
     out_365, _ = process(df, dict(BASE_CONFIG, days_per_year=365))
     out_36525, _ = process(df, dict(BASE_CONFIG, days_per_year=365.25))
     check("365 divisor drifts", round(float(out_365["years_from_baseline"].max()), 2), 4.00)
     check("365.25 divisor exact", round(float(out_36525["years_from_baseline"].max()), 2), 4.00)
+
+
+def test_deviation_from_scheduled_anniversary():
+    """Visits are assigned by the widened windows but flagged against the protocol's tolerance."""
+    df = frame(
+        [
+            ("P1", "2020-01-01"),  # 0.00y -> T1, on schedule
+            ("P1", "2020-12-13"),  # 0.95y -> T2, 0.05y early: within +/-0.25
+            ("P1", "2022-03-21"),  # 2.22y -> T3, 0.22y late: still within
+        ]
+    )
+    out, _ = process(df, dict(BASE_CONFIG))
+    check("deviations", [round(float(d), 2) for d in out["deviation_years"]], [0.0, -0.05, 0.22])
+    check("all within tolerance", list(out["within_tolerance"]), [True, True, True])
+
+    # 1.52y is assigned T3 by the contiguous windows but is half a year early for it.
+    df2 = frame([("P1", "2020-01-01"), ("P1", "2021-07-09")])
+    out2, _ = process(df2, dict(BASE_CONFIG))
+    check("off-schedule visit still assigned", list(out2["timepoint"]), ["T1", "T3"])
+    check("off-schedule deviation", round(float(out2["deviation_years"].iloc[1]), 2), -0.48)
+    check("off-schedule flagged", list(out2["within_tolerance"]), [True, False])
+
+
+def test_tolerance_is_configurable():
+    df = frame([("P1", "2020-01-01"), ("P1", "2021-07-09")])  # T3, 0.48y early
+    out, _ = process(df, dict(BASE_CONFIG, tolerance_years=0.5))
+    check("wider tolerance accepts it", list(out["within_tolerance"]), [True, True])
 
 
 if __name__ == "__main__":

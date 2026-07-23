@@ -20,7 +20,7 @@ containing at minimum:
 
 | Name | Contents |
 | --- | --- |
-| `timepoints` | Every input column, plus `years_from_baseline`, `timepoint` (`T1`, `T2`, …), `timepoint_index`, `is_selected_visit`, and `is_placeholder` when the full grid is enabled |
+| `timepoints` | Every input column, plus `years_from_baseline`, `timepoint` (`T1`, `T2`, …), `timepoint_index`, `deviation_years`, `within_tolerance` and `is_selected_visit` |
 | `duplicates` | One row per participant/timepoint collision: how many visits competed, their elapsed years and dates, and which was kept |
 
 ## Window schedules
@@ -42,6 +42,29 @@ Tn  (n >= 3)  -> [(n-1)*interval - lower_margin, (n-1)*interval + upper_margin]
 `test_logic.py` sweeps every hundredth of a year from 0 to 15 and asserts both
 built-in schedules reproduce the original notebook's `get_tp()` exactly.
 
+## Protocol tolerance vs assignment windows
+
+The source PDF defines two things, and they are not the same:
+
+- **The protocol tolerance** — attend within ±3 months (±0.25y) of the anniversary.
+  The PDF labels the gaps between those windows "blind spot (6 months)".
+- **The assignment windows** — widened to be contiguous (T2 = 0.75–1.50,
+  T3 = 1.51–2.50, …), so no visit falls into a gap.
+
+This node assigns using the **contiguous** windows, because enforcing ±3 months
+strictly discards every off-schedule visit — 4 of 18 (22%) on the bundled test
+data. Instead each visit records how far it was from its scheduled anniversary:
+
+| Column | Meaning |
+| --- | --- |
+| `deviation_years` | `years_from_baseline` minus the scheduled anniversary `(n-1) × interval`. Negative = early. |
+| `within_tolerance` | Whether `abs(deviation_years)` is within *Protocol tolerance*, default 0.25y. |
+
+Nothing is dropped on this basis — filter downstream on `within_tolerance` for a
+per-protocol analysis, and keep the full set for intention-to-treat. To enforce
+the strict windows at assignment time instead, use the Custom schedule with
+`lower_margin` and `upper_margin` of `0.25`.
+
 ## Behaviour worth knowing
 
 - **T1 is always the baseline visit.** The collision rule applies from T2 onward;
@@ -61,10 +84,3 @@ built-in schedules reproduce the original notebook's `get_tp()` exactly.
 - **Nothing is silently dropped.** Visits falling in a gap between windows and
   losing visits from a collision are counted in the logs; turn off
   *Drop unassigned visits* to keep them in the output with a blank timepoint.
-- **Turn on *Emit a row for every timepoint* if a LOCF step follows.** The source
-  notebook pads every participant to one row per timepoint (T1 up to the highest
-  timepoint any participant reached), blank where they did not attend, and flags
-  them in `is_placeholder`. `Filling_Missing_Values.ipynb` depends on that shape —
-  it splits real visits from placeholders on `AppointmentDate.notna()`. Without
-  the padding, "this participant missed T2" is not representable in the output.
-  Off by default, because the grid is surprising output for any other consumer.

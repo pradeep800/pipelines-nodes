@@ -160,6 +160,16 @@ def window_bounds(tp: int, w: dict) -> tuple[float, float]:
     return centre - w["lower_margin"], centre + w["upper_margin"]
 
 
+def ideal_years(tp: int, w: dict) -> float:
+    """The scheduled anniversary for a timepoint: T1 at 0, T2 at one interval, etc.
+
+    This is the date the protocol asks the participant to attend, which is NOT the
+    centre of the assignment window — the windows are widened to be contiguous so
+    that a late visit still lands somewhere instead of being discarded.
+    """
+    return (tp - 1) * w["interval_years"]
+
+
 def window_centre(tp: int, w: dict) -> float:
     if tp == 1:
         return 0.0
@@ -280,49 +290,6 @@ def assign_for_participant(
 # ---------------------------------------------------------------------------
 
 
-def add_placeholder_rows(
-    df: pd.DataFrame, participant_col: str, max_observed: int
-) -> pd.DataFrame:
-    """Pad every participant out to one row per timepoint, blank where absent.
-
-    A downstream last-observation-carried-forward step needs these rows: without
-    them there is no way to tell 'attended but the measure was not taken' from
-    'never attended'. The grid runs to the highest timepoint reached by ANY
-    participant, so every participant ends up with the same number of rows.
-    """
-    if max_observed < 1:
-        return df
-
-    present = {
-        (participant, int(tp))
-        for participant, tp in zip(df[participant_col], df["timepoint_index"])
-        if pd.notna(tp)
-    }
-
-    blanks = []
-    for participant in df[participant_col].unique():
-        for tp in range(1, max_observed + 1):
-            if (participant, tp) not in present:
-                blanks.append(
-                    {
-                        participant_col: participant,
-                        "timepoint": f"T{tp}",
-                        "timepoint_index": tp,
-                        "is_selected_visit": False,
-                        "is_placeholder": True,
-                    }
-                )
-
-    df = df.copy()
-    df["is_placeholder"] = False
-    if not blanks:
-        return df
-
-    padded = pd.concat([df, pd.DataFrame(blanks)], ignore_index=True)
-    padded["timepoint_index"] = padded["timepoint_index"].astype("Int64")
-    return padded.sort_values([participant_col, "timepoint_index"]).reset_index(drop=True)
-
-
 def process(df: pd.DataFrame, config: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
     participant_col = str(config.get("participant_column") or "Barcode").strip()
     date_col = str(config.get("date_column") or "AppointmentDate").strip()
@@ -335,6 +302,7 @@ def process(df: pd.DataFrame, config: dict) -> tuple[pd.DataFrame, pd.DataFrame]
     promote = bool(config.get("promote_late_baseline", False))
     promote_fraction = float(config.get("promote_window_fraction") or 0.95)
     drop_unassigned = bool(config.get("drop_unassigned", True))
+    tolerance_years = float(config.get("tolerance_years") or 0.25)
 
     for column in (participant_col, date_col):
         if column not in df.columns:
@@ -389,6 +357,14 @@ def process(df: pd.DataFrame, config: dict) -> tuple[pd.DataFrame, pd.DataFrame]
         df["timepoint"].str.slice(1), errors="coerce"
     ).astype("Int64")
 
+    # How far each visit was from the anniversary the protocol asked for. Assignment
+    # uses the widened contiguous windows so nothing is discarded; this column keeps
+    # the protocol's tolerance available, so an analyst can restrict to on-schedule
+    # visits later without re-running the pipeline and losing the rest.
+    scheduled = (df["timepoint_index"].astype("Float64") - 1) * windows["interval_years"]
+    df["deviation_years"] = (df["years_from_baseline"] - scheduled).round(2)
+    df["within_tolerance"] = (df["deviation_years"].abs() <= tolerance_years).astype("boolean")
+
     unassigned = int(df["timepoint"].isna().sum())
     superseded = int((~df["is_selected_visit"] & df["timepoint"].notna()).sum())
     log(
@@ -400,16 +376,12 @@ def process(df: pd.DataFrame, config: dict) -> tuple[pd.DataFrame, pd.DataFrame]
         df = df[df["is_selected_visit"]].copy()
         log(f"Dropped unassigned and superseded visits — {len(df)} row(s) remain")
 
-    if bool(config.get("emit_full_grid", False)):
-        max_observed = (
-            int(df["timepoint_index"].max()) if df["timepoint_index"].notna().any() else 0
-        )
-        before = len(df)
-        df = add_placeholder_rows(df, participant_col, max_observed)
-        log(
-            f"Padded to a full participant x timepoint grid (T1..T{max_observed}): "
-            f"{before} -> {len(df)} row(s), {len(df) - before} placeholder(s)"
-        )
+    # Counted after the drop so the number matches what actually leaves the node.
+    off_schedule = int((df["within_tolerance"] == False).sum())  # noqa: E712 — nullable boolean
+    log(
+        f"{off_schedule} emitted visit(s) fell outside the +/-{tolerance_years}y protocol "
+        f"window (kept and flagged via within_tolerance, not dropped)"
+    )
 
     duplicates = pd.DataFrame(
         collision_rows,
