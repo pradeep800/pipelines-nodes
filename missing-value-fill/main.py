@@ -267,8 +267,12 @@ def process(df: pd.DataFrame, config: dict) -> tuple[pd.DataFrame, pd.DataFrame]
     missing_columns = [c for c in parameters if c not in df.columns]
     if missing_columns:
         raise ValueError(
-            "These columns are configured to be filled but are not in the input: "
+            "These columns are configured in 'Columns to fill' but are not in the input: "
             + ", ".join(missing_columns)
+            + ". Available columns: "
+            + ", ".join(map(str, df.columns))
+            + ". (The node.json placeholder uses real CBR column names — replace them "
+            "with the columns your data actually has.)"
         )
 
     df = df.copy()
