@@ -140,9 +140,32 @@ def resolve_windows(scheme: str, custom: object) -> dict:
         raise ValueError(
             "Timepoint schedule is 'custom' but no custom window definition was provided"
         )
+    # Explicit form: one window per timepoint, in order. Needed for schedules that
+    # are not a repeating interval — a trial sampling at day 0, 7, 30, 90 and 180
+    # cannot be expressed as (n-1) x interval no matter what margins you pick.
+    if "windows" in custom:
+        raw = custom["windows"]
+        if not isinstance(raw, (list, tuple)) or not raw:
+            raise ValueError("custom_windows.windows must be a non-empty list of [min, max] pairs")
+        explicit = []
+        for position, item in enumerate(raw, start=1):
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                raise ValueError(
+                    f"custom_windows.windows[{position - 1}] must be a [min, max] pair, got: {item!r}"
+                )
+            low, high = float(item[0]), float(item[1])
+            if low > high:
+                raise ValueError(f"custom_windows.windows[{position - 1}]: {low} is greater than {high}")
+            explicit.append((low, high))
+        return {"explicit": explicit, "interval_years": None}
+
     missing = [k for k in REQUIRED_WINDOW_KEYS if k not in custom]
     if missing:
-        raise ValueError(f"Custom window definition is missing keys: {', '.join(missing)}")
+        raise ValueError(
+            f"Custom window definition is missing keys: {', '.join(missing)}. "
+            "Provide either those keys for a repeating interval, or a 'windows' "
+            "list of [min, max] pairs for an irregular schedule."
+        )
     windows = {k: float(custom[k]) for k in REQUIRED_WINDOW_KEYS}
     if windows["interval_years"] <= 0:
         raise ValueError("interval_years must be greater than 0")
@@ -151,7 +174,16 @@ def resolve_windows(scheme: str, custom: object) -> dict:
     return windows
 
 
+def timepoint_count(w: dict, max_tp: int) -> int:
+    """How many timepoints this schedule defines, bounded by the configured maximum."""
+    explicit = w.get("explicit")
+    return min(len(explicit), max_tp) if explicit else max_tp
+
+
 def window_bounds(tp: int, w: dict) -> tuple[float, float]:
+    explicit = w.get("explicit")
+    if explicit:
+        return explicit[tp - 1]
     if tp == 1:
         return 0.0, w["t1_max"]
     if tp == 2:
@@ -161,16 +193,23 @@ def window_bounds(tp: int, w: dict) -> tuple[float, float]:
 
 
 def ideal_years(tp: int, w: dict) -> float:
-    """The scheduled anniversary for a timepoint: T1 at 0, T2 at one interval, etc.
+    """The scheduled time for a timepoint: T1 at 0, T2 at one interval, etc.
 
-    This is the date the protocol asks the participant to attend, which is NOT the
-    centre of the assignment window — the windows are widened to be contiguous so
-    that a late visit still lands somewhere instead of being discarded.
+    This is when the protocol asks the subject to attend, which is NOT the centre
+    of the assignment window — the windows are widened to be contiguous so a late
+    visit still lands somewhere instead of being discarded. For an explicit
+    schedule there is no separate target, so the window's midpoint is used.
     """
+    if w.get("explicit"):
+        low, high = window_bounds(tp, w)
+        return (low + high) / 2.0
     return (tp - 1) * w["interval_years"]
 
 
 def window_centre(tp: int, w: dict) -> float:
+    if w.get("explicit"):
+        low, high = window_bounds(tp, w)
+        return (low + high) / 2.0
     if tp == 1:
         return 0.0
     if tp == 2:
@@ -178,15 +217,15 @@ def window_centre(tp: int, w: dict) -> float:
     return (tp - 1) * w["interval_years"]
 
 
-def assign_timepoint(years: float, w: dict, max_tp: int) -> int | None:
-    """First timepoint whose window contains `years`, or None if it falls in a gap.
+def assign_timepoint(elapsed: float, w: dict, max_tp: int) -> int | None:
+    """First timepoint whose window contains `elapsed`, or None if it falls in a gap.
 
     A single function serves both assignment and duplicate detection, so the two
     can never disagree about which side of a boundary a visit sits on.
     """
-    for tp in range(1, max_tp + 1):
+    for tp in range(1, timepoint_count(w, max_tp) + 1):
         low, high = window_bounds(tp, w)
-        if low <= years <= high:
+        if low <= elapsed <= high:
             return tp
     return None
 
@@ -246,11 +285,12 @@ def assign_for_participant(
     # already serving as T1 — otherwise a participant with a single late visit
     # would have their T1 relabelled and lose the baseline entirely.
     if promote and 2 not in chosen and 1 in candidates:
-        floor = w["t1_max"] * promote_fraction
+        t1_max = window_bounds(1, w)[1]
+        floor = t1_max * promote_fraction
         eligible = [
             pos
             for pos in candidates[1]
-            if pos != chosen.get(1) and floor <= float(years.iloc[pos]) <= w["t1_max"]
+            if pos != chosen.get(1) and floor <= float(years.iloc[pos]) <= t1_max
         ]
         if eligible:
             promoted = max(eligible, key=lambda i: years.iloc[i])
@@ -361,7 +401,9 @@ def process(df: pd.DataFrame, config: dict) -> tuple[pd.DataFrame, pd.DataFrame]
     # uses the widened contiguous windows so nothing is discarded; this column keeps
     # the protocol's tolerance available, so an analyst can restrict to on-schedule
     # visits later without re-running the pipeline and losing the rest.
-    scheduled = (df["timepoint_index"].astype("Float64") - 1) * windows["interval_years"]
+    scheduled = df["timepoint_index"].map(
+        lambda tp: ideal_years(int(tp), windows) if pd.notna(tp) else pd.NA
+    ).astype("Float64")
     df["deviation_years"] = (df["years_from_baseline"] - scheduled).round(2)
     df["within_tolerance"] = (df["deviation_years"].abs() <= tolerance_years).astype("boolean")
 

@@ -62,12 +62,21 @@ DEMOGRAPHICS = {
     "P7": (79, "F", 7), "P8": (64, "M", 4), "P9": (77, "F", 2),
 }
 
+# Deliberate defects so a downstream fill step has something to do:
+#   (participant, elapsed years) -> the value recorded instead of a valid score
+DEFECTS = {
+    ("P3", 0.95): "",     # attended, but the test was not administered
+    ("P1", 3.09): 240,    # transcription error, outside the 1-50 valid range
+}
+
 rows = []
 for participant, cohort, years, note in VISITS:
     age, sex, education = DEMOGRAPHICS[participant]
     date = "" if years is None else (BASE + dt.timedelta(days=round(years * 365))).isoformat()
-    # A plausible declining HMSE, with one gap to show blanks survive.
+    # A plausible declining HMSE, with deliberate gaps for the LOCF node to fill.
     hmse = "" if years is None else max(10, round(28 - (age - 64) * 0.2 - years * 1.1))
+    if (participant, years) in DEFECTS:
+        hmse = DEFECTS[(participant, years)]
     rows.append(
         {
             "Barcode": participant,

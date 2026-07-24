@@ -1,11 +1,11 @@
 Barcode,Project,AppointmentDate,AgeAtVisit,Gender,education_years,hmse_total,_note
 P1,TLSA,2020-01-01,72.0,F,8,26,baseline
 P1,TLSA,2021-07-09,73.5,F,8,25,PDF: lands in T3
-P1,TLSA,2023-02-02,75.1,F,8,23,PDF: lands in T4
+P1,TLSA,2023-02-02,75.1,F,8,240,PDF: lands in T4
 P2,TLSA,2020-01-01,68.0,M,12,27,baseline
 P2,TLSA,2022-10-01,70.8,M,12,24,"PDF: lands in T4, skipping T2 and T3"
 P3,TLSA,2020-01-01,75.0,F,5,26,baseline
-P3,TLSA,2020-12-13,76.0,F,5,25,PDF: lands in T2
+P3,TLSA,2020-12-13,76.0,F,5,,PDF: lands in T2
 P3,TLSA,2022-03-21,77.2,F,5,23,PDF: lands in T3
 P4,TLSA,2020-01-01,81.0,M,0,25,baseline
 P4,TLSA,2023-09-20,84.7,M,0,21,PDF: past T4; becomes T5 unless timepoints are capped

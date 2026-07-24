@@ -235,6 +235,48 @@ def test_tolerance_is_configurable():
     check("wider tolerance accepts it", list(out["within_tolerance"]), [True, True])
 
 
+def test_irregular_schedule_via_explicit_windows():
+    """A pharmacokinetic-style schedule: day 0, 7, 30, 90 — not a repeating interval."""
+    windows = resolve_windows("custom", {"windows": [[0, 3], [4, 14], [20, 45], [75, 110]]})
+    check("day 0 -> T1", assign_timepoint(0, windows, 20), 1)
+    check("day 8 -> T2", assign_timepoint(8, windows, 20), 2)
+    check("day 31 -> T3", assign_timepoint(31, windows, 20), 3)
+    check("day 88 -> T4", assign_timepoint(88, windows, 20), 4)
+    check("day 60 falls in a gap", assign_timepoint(60, windows, 20), None)
+    check("day 200 past the last window", assign_timepoint(200, windows, 20), None)
+
+
+def test_blood_sampling_in_days_end_to_end():
+    """Same node, days instead of years, irregular sampling schedule."""
+    df = pd.DataFrame(
+        [
+            ("S1", "2024-01-01", 13.2),   # day 0   -> T1
+            ("S1", "2024-01-09", 12.8),   # day 8   -> T2
+            ("S1", "2024-02-01", 12.1),   # day 31  -> T3
+            ("S1", "2024-03-01", 11.9),   # day 60  -> gap, unassigned
+            ("S2", "2024-06-01", 14.0),   # day 0   -> T1
+            ("S2", "2024-08-30", 13.1),   # day 90  -> T4
+        ],
+        columns=["PatientID", "CollectionDate", "haemoglobin"],
+    )
+    config = {
+        "scheme": "custom",
+        "custom_windows": {"windows": [[0, 3], [4, 14], [20, 45], [75, 110]]},
+        "participant_column": "PatientID",
+        "date_column": "CollectionDate",
+        "days_per_year": 1,           # elapsed time measured in days
+        "collision_rule": "closest",
+        "max_timepoints": 20,
+        "drop_unassigned": True,
+        "tolerance_years": 5,          # +/- 5 days of the scheduled day
+    }
+    out, _ = process(df, config)
+    check("S1 timepoints", list(out[out["PatientID"] == "S1"]["timepoint"]), ["T1", "T2", "T3"])
+    check("S2 timepoints", list(out[out["PatientID"] == "S2"]["timepoint"]), ["T1", "T4"])
+    check("payload column preserved", "haemoglobin" in out.columns, True)
+    check("elapsed measured in days", round(float(out["years_from_baseline"].max()), 0), 90.0)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for test in tests:
